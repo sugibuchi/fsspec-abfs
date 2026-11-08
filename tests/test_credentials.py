@@ -42,7 +42,10 @@ async def test_a_keyword_makes_its_class_with_the_arguments() -> None:
 def test_every_keyword_names_an_async_class(keyword: str) -> None:
     from fsspec_abfs.credentials import _load  # noqa: PLC0415
 
-    assert _load(TOKEN_CREDENTIALS[keyword])
+    class_name, names = TOKEN_CREDENTIALS[keyword]
+    # Each option listed is one the constructor takes, by name or by **kwargs.
+    assert _load(class_name)
+    assert names
 
 
 async def test_a_class_name_makes_its_class() -> None:
@@ -91,7 +94,44 @@ def test_a_sync_credential_is_refused() -> None:
         StorageCredential.from_credential("azure.identity.AzureCliCredential")
 
 
+async def test_a_keyword_takes_only_its_options() -> None:
+    # A file system's other options, e.g. asynchronous, are left alone.
+    credential = StorageCredential.from_credential(
+        "azure-cli", tenant_id="t", asynchronous=True, client_secret="unused"
+    )
+    assert isinstance(credential.value, AzureCliCredential)
+    assert credential.value.tenant_id == "t"
+    await credential.value.close()
+
+
+async def test_a_class_name_takes_the_options_its_constructor_names() -> None:
+    credential = StorageCredential.from_credential(
+        "azure.identity.aio.ClientSecretCredential",
+        tenant_id="t",
+        client_id="c",
+        client_secret="s",
+        asynchronous=True,
+    )
+    assert isinstance(credential.value, ClientSecretCredential)
+    await credential.value.close()
+
+
 @pytest.mark.parametrize("value", [_KEY, _SAS, "anonymous"])
-def test_arguments_only_for_a_named_token_credential(value: str) -> None:
-    with pytest.raises(ValueError, match="takes no arguments"):
-        StorageCredential.from_credential(value, tenant_id="t")
+def test_other_credentials_leave_the_options(value: str) -> None:
+    assert StorageCredential.from_credential(value, tenant_id="t").kind != (
+        "TokenCredential"
+    )
+
+
+async def test_the_file_system_takes_them_from_its_storage_options() -> None:
+    from fsspec_abfs.abfs import AbfsFileSystem  # noqa: PLC0415
+
+    fs = AbfsFileSystem(
+        "https://acct.dfs.core.windows.net/",
+        "azure-cli",
+        tenant_id="t",
+        asynchronous=True,
+        skip_instance_cache=True,
+    )
+    assert fs.storage_credential.value.tenant_id == "t"
+    await fs.storage_credential.value.close()

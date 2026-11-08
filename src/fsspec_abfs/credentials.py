@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 import importlib
+import inspect
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -18,16 +19,28 @@ from azure.core.credentials_async import AsyncTokenCredential
 
 __all__ = ["TOKEN_CREDENTIALS", "StorageCredential"]
 
-TOKEN_CREDENTIALS: dict[str, str] = {
-    "default": "azure.identity.aio.DefaultAzureCredential",
-    "environment": "azure.identity.aio.EnvironmentCredential",
-    "azure-cli": "azure.identity.aio.AzureCliCredential",
-    "client-secret": "azure.identity.aio.ClientSecretCredential",
-    "certificate": "azure.identity.aio.CertificateCredential",
-    "managed-identity": "azure.identity.aio.ManagedIdentityCredential",
-    "workload-identity": "azure.identity.aio.WorkloadIdentityCredential",
+TOKEN_CREDENTIALS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "default": ("azure.identity.aio.DefaultAzureCredential", ("authority",)),
+    "environment": ("azure.identity.aio.EnvironmentCredential", ("authority",)),
+    "azure-cli": ("azure.identity.aio.AzureCliCredential", ("tenant_id",)),
+    "client-secret": (
+        "azure.identity.aio.ClientSecretCredential",
+        ("tenant_id", "client_id", "client_secret", "authority"),
+    ),
+    "certificate": (
+        "azure.identity.aio.CertificateCredential",
+        ("tenant_id", "client_id", "certificate_path", "authority"),
+    ),
+    "managed-identity": (
+        "azure.identity.aio.ManagedIdentityCredential",
+        ("client_id",),
+    ),
+    "workload-identity": (
+        "azure.identity.aio.WorkloadIdentityCredential",
+        ("tenant_id", "client_id", "token_file_path"),
+    ),
 }
-"""The keywords naming a token credential, and the class each names.
+"""The keywords naming a token credential: the class each names, and the options it takes.
 
 No "user-password": ``azure.identity.aio`` has no ``UsernamePasswordCredential``.
 """
@@ -63,7 +76,7 @@ class StorageCredential:
         return f"StorageCredential(kind={self.kind!r}, value={self.value!r})"
 
     @classmethod
-    def from_credential(cls, credential: Any, **kwargs: Any) -> StorageCredential:
+    def from_credential(cls, credential: Any, **options: Any) -> StorageCredential:
         """The credential that ``credential`` gives.
 
         Parameters
@@ -79,9 +92,11 @@ class StorageCredential:
             - an account's shared key.
 
             None is anonymous.
-        **kwargs
-            Passed to the token credential class a keyword or a class name
-            names, e.g. ``tenant_id``. Refused with any other credential.
+        **options
+            The options of a file system, e.g. its ``storage_options``. A token
+            credential a keyword names takes those its entry of
+            `TOKEN_CREDENTIALS` lists, e.g. ``tenant_id``. One a class name
+            names takes those its constructor names. The others are left.
 
         Returns
         -------
@@ -92,15 +107,12 @@ class StorageCredential:
         TypeError
             If ``credential`` is none of these, or a sync token credential.
         ValueError
-            If a string is none of these, or ``kwargs`` are given for a
-            credential that takes none.
+            If a string is none of these.
         """
         if isinstance(credential, AsyncTokenCredential):
-            _no_kwargs(kwargs, "a token credential object")
             return cls("TokenCredential", credential)
 
         if credential is None or credential == _ANONYMOUS:
-            _no_kwargs(kwargs, "anonymous access")
             return cls("Anonymous", None)
 
         if not isinstance(credential, str):
@@ -110,16 +122,17 @@ class StorageCredential:
             )
 
         if credential in TOKEN_CREDENTIALS:
-            return cls(
-                "TokenCredential", _load(TOKEN_CREDENTIALS[credential])(**kwargs)
-            )
+            class_name, names = TOKEN_CREDENTIALS[credential]
+            return cls("TokenCredential", _make(_load(class_name), names, options))
         if _is_class_name(credential):
-            return cls("TokenCredential", _load(credential)(**kwargs))
+            token_class = _load(credential)
+            return cls(
+                "TokenCredential",
+                _make(token_class, _named_parameters(token_class), options),
+            )
         if _is_sas_token(credential):
-            _no_kwargs(kwargs, "a SAS token")
             return cls("SAS", credential.removeprefix("?"))
         if _is_shared_key(credential):
-            _no_kwargs(kwargs, "a shared key")
             return cls("SharedKey", credential)
 
         # The value itself is never quoted: it may be a secret.
@@ -129,9 +142,27 @@ class StorageCredential:
         )
 
 
-def _no_kwargs(kwargs: dict[str, Any], what: str) -> None:
-    if kwargs:
-        raise ValueError(f"{what} takes no arguments: {', '.join(sorted(kwargs))}")
+def _make(
+    token_class: type[AsyncTokenCredential],
+    names: tuple[str, ...],
+    options: dict[str, Any],
+) -> AsyncTokenCredential:
+    """A token credential of ``token_class``, made with the options it takes."""
+    return token_class(**{n: options[n] for n in names if n in options})
+
+
+def _named_parameters(token_class: type) -> tuple[str, ...]:
+    """The parameters a class's constructor names, without ``*args`` or ``**kwargs``.
+
+    Those only a class's ``**kwargs`` takes are not known, so a file system's
+    other options are never passed through them.
+    """
+    named = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    return tuple(
+        p.name
+        for p in inspect.signature(token_class).parameters.values()
+        if p.kind in named
+    )
 
 
 def _is_class_name(value: str) -> bool:

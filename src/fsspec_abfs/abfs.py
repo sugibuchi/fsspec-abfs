@@ -182,9 +182,6 @@ class AbfsFileSystem(TreeFileSystem):
         shared key, as `StorageCredential.from_credential` reads it. None is
         anonymous. A token credential given is the caller's to close. One made
         from a string is the file system's, closed by `close`.
-    credential_options : dict, optional
-        Arguments of the token credential a string names, e.g.
-        ``{"tenant_id": ...}``.
     is_hns_enabled : bool, optional
         Whether the account has a hierarchical namespace, as Azure's account
         information names it. None asks the account on first need: see
@@ -194,7 +191,9 @@ class AbfsFileSystem(TreeFileSystem):
     io_concurrency : int or asyncio.Semaphore, optional
         The range reads and block uploads at a time, of all files opened.
     **storage_options
-        Passed to `fsspec.asyn.AsyncFileSystem`, e.g. ``asynchronous=True``.
+        Passed to `fsspec.asyn.AsyncFileSystem`, e.g. ``asynchronous=True``. A
+        token credential a string names takes its own from them, e.g.
+        ``tenant_id``: see `StorageCredential.from_credential`.
 
     Raises
     ------
@@ -229,7 +228,6 @@ class AbfsFileSystem(TreeFileSystem):
         account_url: str,
         credential: Any = None,
         *,
-        credential_options: dict[str, Any] | None = None,
         is_hns_enabled: bool | None = None,
         operation_concurrency: int | asyncio.Semaphore | None = None,
         io_concurrency: int | asyncio.Semaphore | None = None,
@@ -241,7 +239,7 @@ class AbfsFileSystem(TreeFileSystem):
         self.endpoints = _endpoints or parse_account_url(account_url)
         self.account_url = self.endpoints.dfs_url
         self.storage_credential = StorageCredential.from_credential(
-            credential, **(credential_options or {})
+            credential, **storage_options
         )
         # A token credential made from a string is this file system's to close.
         self._owns_credential = (
