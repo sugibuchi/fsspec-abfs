@@ -42,10 +42,7 @@ async def test_a_keyword_makes_its_class_with_the_arguments() -> None:
 def test_every_keyword_names_an_async_class(keyword: str) -> None:
     from fsspec_abfs.credentials import _load  # noqa: PLC0415
 
-    class_name, names = TOKEN_CREDENTIALS[keyword]
-    # Each option listed is one the constructor takes, by name or by **kwargs.
-    assert _load(class_name)
-    assert names
+    assert _load(TOKEN_CREDENTIALS[keyword])
 
 
 async def test_a_class_name_makes_its_class() -> None:

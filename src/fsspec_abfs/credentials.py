@@ -19,28 +19,16 @@ from azure.core.credentials_async import AsyncTokenCredential
 
 __all__ = ["TOKEN_CREDENTIALS", "StorageCredential"]
 
-TOKEN_CREDENTIALS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "default": ("azure.identity.aio.DefaultAzureCredential", ("authority",)),
-    "environment": ("azure.identity.aio.EnvironmentCredential", ("authority",)),
-    "azure-cli": ("azure.identity.aio.AzureCliCredential", ("tenant_id",)),
-    "client-secret": (
-        "azure.identity.aio.ClientSecretCredential",
-        ("tenant_id", "client_id", "client_secret", "authority"),
-    ),
-    "certificate": (
-        "azure.identity.aio.CertificateCredential",
-        ("tenant_id", "client_id", "certificate_path", "authority"),
-    ),
-    "managed-identity": (
-        "azure.identity.aio.ManagedIdentityCredential",
-        ("client_id",),
-    ),
-    "workload-identity": (
-        "azure.identity.aio.WorkloadIdentityCredential",
-        ("tenant_id", "client_id", "token_file_path"),
-    ),
+TOKEN_CREDENTIALS: dict[str, str] = {
+    "default": "azure.identity.aio.DefaultAzureCredential",
+    "environment": "azure.identity.aio.EnvironmentCredential",
+    "azure-cli": "azure.identity.aio.AzureCliCredential",
+    "client-secret": "azure.identity.aio.ClientSecretCredential",
+    "certificate": "azure.identity.aio.CertificateCredential",
+    "managed-identity": "azure.identity.aio.ManagedIdentityCredential",
+    "workload-identity": "azure.identity.aio.WorkloadIdentityCredential",
 }
-"""The keywords naming a token credential: the class each names, and the options it takes.
+"""The keywords naming a token credential, and the class each names.
 
 No "user-password": ``azure.identity.aio`` has no ``UsernamePasswordCredential``.
 """
@@ -94,9 +82,8 @@ class StorageCredential:
             None is anonymous.
         **options
             The options of a file system, e.g. its ``storage_options``. A token
-            credential a keyword names takes those its entry of
-            `TOKEN_CREDENTIALS` lists, e.g. ``tenant_id``. One a class name
-            names takes those its constructor names. The others are left.
+            credential a keyword or a class name names takes those its
+            constructor names, e.g. ``tenant_id``. The others are left.
 
         Returns
         -------
@@ -121,15 +108,9 @@ class StorageCredential:
                 f" {type(credential).__name__}: the service clients are async"
             )
 
-        if credential in TOKEN_CREDENTIALS:
-            class_name, names = TOKEN_CREDENTIALS[credential]
-            return cls("TokenCredential", _make(_load(class_name), names, options))
-        if _is_class_name(credential):
-            token_class = _load(credential)
-            return cls(
-                "TokenCredential",
-                _make(token_class, _named_parameters(token_class), options),
-            )
+        if credential in TOKEN_CREDENTIALS or _is_class_name(credential):
+            class_name = TOKEN_CREDENTIALS.get(credential, credential)
+            return cls("TokenCredential", _make(_load(class_name), options))
         if _is_sas_token(credential):
             return cls("SAS", credential.removeprefix("?"))
         if _is_shared_key(credential):
@@ -143,26 +124,20 @@ class StorageCredential:
 
 
 def _make(
-    token_class: type[AsyncTokenCredential],
-    names: tuple[str, ...],
-    options: dict[str, Any],
+    token_class: type[AsyncTokenCredential], options: dict[str, Any]
 ) -> AsyncTokenCredential:
-    """A token credential of ``token_class``, made with the options it takes."""
-    return token_class(**{n: options[n] for n in names if n in options})
+    """A token credential of ``token_class``, made with the options its constructor names.
 
-
-def _named_parameters(token_class: type) -> tuple[str, ...]:
-    """The parameters a class's constructor names, without ``*args`` or ``**kwargs``.
-
-    Those only a class's ``**kwargs`` takes are not known, so a file system's
-    other options are never passed through them.
+    Those only its ``**kwargs`` takes are not known, so a file system's other
+    options are never passed through them.
     """
     named = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    return tuple(
+    names = {
         p.name
         for p in inspect.signature(token_class).parameters.values()
         if p.kind in named
-    )
+    }
+    return token_class(**{n: v for n, v in options.items() if n in names})
 
 
 def _is_class_name(value: str) -> bool:
