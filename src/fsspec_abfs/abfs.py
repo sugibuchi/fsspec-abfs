@@ -53,6 +53,7 @@ from ._contrib.strategy.files.fsspec_transaction import (
 from ._contrib.strategy.tree.filesystem import TreeFileSystem
 from ._errors import azure_errors, describe, os_error
 from ._paths import account_url_of, parse_account_url, split_path, strip_protocol
+from .credentials import StorageCredential
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -176,11 +177,14 @@ class AbfsFileSystem(TreeFileSystem):
         The account's dfs or blob endpoint, e.g.
         ``https://<account>.dfs.core.windows.net/``, or Fabric OneLake's
         ``https://onelake.dfs.fabric.microsoft.com/``.
-    credential : optional
-        Any credential the Azure SDK's async clients take: a token credential
-        of ``azure.identity.aio``, an account key, a SAS token, or None for
-        anonymous access. It is passed as it is to both clients. The caller
-        keeps closing it.
+    credential : AsyncTokenCredential or str, optional
+        An async token credential, or a string naming one, a SAS token or a
+        shared key, as `StorageCredential.from_credential` reads it. None is
+        anonymous. A token credential given is the caller's to close. One made
+        from a string is the file system's, closed by `close`.
+    credential_options : dict, optional
+        Arguments of the token credential a string names, e.g.
+        ``{"tenant_id": ...}``.
     is_hns_enabled : bool, optional
         Whether the account has a hierarchical namespace, as Azure's account
         information names it. None asks the account on first need: see
@@ -225,6 +229,7 @@ class AbfsFileSystem(TreeFileSystem):
         account_url: str,
         credential: Any = None,
         *,
+        credential_options: dict[str, Any] | None = None,
         is_hns_enabled: bool | None = None,
         operation_concurrency: int | asyncio.Semaphore | None = None,
         io_concurrency: int | asyncio.Semaphore | None = None,
@@ -235,7 +240,14 @@ class AbfsFileSystem(TreeFileSystem):
         # http://127.0.0.1, are no account URL. account_url is then ignored.
         self.endpoints = _endpoints or parse_account_url(account_url)
         self.account_url = self.endpoints.dfs_url
-        self.credential = credential
+        self.storage_credential = StorageCredential.from_credential(
+            credential, **(credential_options or {})
+        )
+        # A token credential made from a string is this file system's to close.
+        self._owns_credential = (
+            self.storage_credential.kind == "TokenCredential"
+            and self.storage_credential.value is not credential
+        )
         # Set before TreeFileSystem's check of the profile, which reads it.
         self._is_hns_enabled: bool | None = is_hns_enabled
         self._hns_warned = False
@@ -279,10 +291,10 @@ class AbfsFileSystem(TreeFileSystem):
         if self._client_loop is not loop:
             # Both on the account's two endpoints, with the same credential.
             self._blob_service_client = BlobServiceClient(
-                self.endpoints.blob_url, credential=self.credential
+                self.endpoints.blob_url, credential=self.storage_credential.value
             )
             self._dfs_service_client = DataLakeServiceClient(
-                self.endpoints.dfs_url, credential=self.credential
+                self.endpoints.dfs_url, credential=self.storage_credential.value
             )
             self._client_loop = loop
 
@@ -304,9 +316,14 @@ class AbfsFileSystem(TreeFileSystem):
     def close(self) -> None:
         """Close both clients, then what `TreeFileSystem` holds. A closed filesystem refuses further calls."""
         try:
-            clients = [
+            clients: list[Any] = [
                 c for c in (self._blob_service_client, self._dfs_service_client) if c
             ]
+            # A credential of its own is closed with the clients, on their loop,
+            # where its requests ran. Unused, it holds nothing.
+            if clients and self._owns_credential:
+                clients.append(self.storage_credential.value)
+                self._owns_credential = False
             loop = self._client_loop
             self._blob_service_client = self._dfs_service_client = None
             self._client_loop = None
