@@ -233,7 +233,6 @@ class AbfsFileSystem(TreeFileSystem):
         self.credential = credential
         # Set before TreeFileSystem's check of the profile, which reads it.
         self._is_hns_enabled: bool | None = is_hns_enabled
-        self._hns_probe: asyncio.Future[bool | None] | None = None
         self._hns_warned = False
 
         self._blob_service: BlobServiceClient | None = None
@@ -334,46 +333,30 @@ class AbfsFileSystem(TreeFileSystem):
         return _PROFILES[self._is_hns_enabled]
 
     async def _hns(self, container: str) -> bool | None:
-        """Whether the account has a hierarchical namespace, asked if not known yet.
+        """Whether the account has a hierarchical namespace: True, False, or None if unsure.
 
-        Concurrent first callers share one request. ``container`` is the
-        container of the path operated on, which the second probe needs.
-        """
-        if self._is_hns_enabled is not None:
-            return self._is_hns_enabled
-
-        loop = asyncio.get_running_loop()
-        probe = self._hns_probe
-        if probe is None or probe.get_loop() is not loop:
-            probe = self._hns_probe = asyncio.ensure_future(self._probe_hns(container))
-        try:
-            # Shielded: one caller cancelled never cancels the others' probe.
-            answer = await asyncio.shield(probe)
-        finally:
-            if probe.done() and self._hns_probe is probe:
-                self._hns_probe = None
-
-        if answer is not None:
-            self._is_hns_enabled = answer
-        return answer
-
-    async def _probe_hns(self, container: str) -> bool | None:
-        """Ask the account whether it has a hierarchical namespace: True, False, or None if unsure.
+        Asked until known, then kept. Concurrent first callers may each ask:
+        a few requests, once, cost less than sharing one.
 
         1. The blob service's account information says so, but needs a role
            on the account: a container's SAS or role is refused it.
-        2. Else a container's root ACL, from the Data Lake API: an account
-           without a hierarchical namespace refuses it by an error code of
-           its own. Any other failure tells nothing.
+        2. Else the root ACL of ``container``, the container of the path
+           operated on, from the Data Lake API: an account without a
+           hierarchical namespace refuses it by an error code of its own. Any
+           other failure tells nothing.
 
         Only an error's type, status and code are logged: Azure's messages may
         quote request URLs, with a SAS token in them.
         """
+        if self._is_hns_enabled is not None:
+            return self._is_hns_enabled
+
         blob_service, dfs_service = self._clients()
         last: BaseException | None = None
         try:
             info = await blob_service.get_account_information()
-            return bool(info.get("is_hns_enabled"))
+            self._is_hns_enabled = bool(info.get("is_hns_enabled"))
+            return self._is_hns_enabled
         except AzureError as e:
             logger.debug("Account information refused: %s", describe(e))
             last = e
@@ -384,9 +367,11 @@ class AbfsFileSystem(TreeFileSystem):
             ).get_directory_client("/")
             try:
                 await directory.get_access_control()
+                self._is_hns_enabled = True
                 return True
             except HttpResponseError as e:
                 if getattr(e, "error_code", None) in _NO_HNS_CODES:
+                    self._is_hns_enabled = False
                     return False
                 last = e
             except AzureError as e:

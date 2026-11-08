@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 import pytest
@@ -95,10 +94,10 @@ async def test_no_container(make_fs, account, azure_error) -> None:
     assert "get_access_control" not in account.calls
 
 
-async def test_one_probe_shared(make_fs, account) -> None:
+async def test_asked_once_known(make_fs, account) -> None:
     fs = make_fs(is_hns_enabled=None)
-    answers = await asyncio.gather(*(fs._hns("c") for _ in range(5)))
-    assert answers == [False] * 5
+    assert await fs._hns("c") is False
+    assert await fs._hns("c") is False
     assert account.calls == {"get_account_information": 1}
 
 
