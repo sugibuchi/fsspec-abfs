@@ -240,9 +240,9 @@ class AbfsFileSystem(TreeFileSystem):
         self._is_hns_enabled: bool | None = is_hns_enabled
         self._hns_warned = False
 
-        self._blob_service: BlobServiceClient | None = None
-        self._dfs_service: DataLakeServiceClient | None = None
-        self._clients_loop: asyncio.AbstractEventLoop | None = None
+        # Each client with the loop it was made on.
+        self._blob_service_client: tuple[BlobServiceClient, Any] | None = None
+        self._dfs_service_client: tuple[DataLakeServiceClient, Any] | None = None
 
         super().__init__(
             operation_concurrency=operation_concurrency or self.operation_concurrency,
@@ -267,54 +267,68 @@ class AbfsFileSystem(TreeFileSystem):
 
     # The clients.
 
-    def _clients(self) -> tuple[BlobServiceClient, DataLakeServiceClient]:
-        """The clients of the running loop, made on first use there.
+    # The SDK's async clients hold an aiohttp session, bound to the loop of its
+    # first request: a filesystem used on another loop gets new ones.
 
-        The SDK's async clients hold an aiohttp session, bound to the loop of
-        its first request: a filesystem used on another loop gets new ones.
-        """
-        if self._closed:
-            raise RuntimeError("The file system is already closed")
-        loop = asyncio.get_running_loop()
-        if self._blob_service is None or self._clients_loop is not loop:
-            # Both on the account's two endpoints, with the same credential.
-            self._blob_service = BlobServiceClient(
+    def _blob_service(self) -> BlobServiceClient:
+        """The Blob service client of the running loop, made on first use there."""
+        loop = self._running_loop()
+        if (
+            self._blob_service_client is None
+            or self._blob_service_client[1] is not loop
+        ):
+            client = BlobServiceClient(
                 self.endpoints.blob_url, credential=self.credential
             )
-            self._dfs_service = DataLakeServiceClient(
+            self._blob_service_client = (client, loop)
+        return self._blob_service_client[0]
+
+    def _dfs_service(self) -> DataLakeServiceClient:
+        """The Data Lake service client of the running loop, made on first use there."""
+        loop = self._running_loop()
+        if self._dfs_service_client is None or self._dfs_service_client[1] is not loop:
+            client = DataLakeServiceClient(
                 self.endpoints.dfs_url, credential=self.credential
             )
-            self._clients_loop = loop
-        return self._blob_service, self._dfs_service  # type: ignore[return-value]
+            self._dfs_service_client = (client, loop)
+        return self._dfs_service_client[0]
+
+    def _running_loop(self) -> asyncio.AbstractEventLoop:
+        if self._closed:
+            raise RuntimeError("The file system is already closed")
+        return asyncio.get_running_loop()
 
     def _blob(self, container: str, key: str) -> BlobClient:
-        return self._clients()[0].get_blob_client(container, key)
+        return self._blob_service().get_blob_client(container, key)
 
     _closed = False
 
     def close(self) -> None:
         """Close both clients, then what `TreeFileSystem` holds. A closed filesystem refuses further calls."""
         try:
-            clients = [c for c in (self._blob_service, self._dfs_service) if c]
-            loop = self._clients_loop
-            self._blob_service = self._dfs_service = self._clients_loop = None
+            made = [
+                c for c in (self._blob_service_client, self._dfs_service_client) if c
+            ]
+            self._blob_service_client = self._dfs_service_client = None
             self._closed = True
-            if clients and loop is not None and not loop.is_closed():
-                try:
-                    running = asyncio.get_running_loop()
-                except RuntimeError:
-                    running = None
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
 
-                async def close_all() -> None:
-                    for client in clients:
-                        with contextlib.suppress(Exception):
-                            await client.close()
+            for client, loop in made:
+                if loop.is_closed():
+                    continue
+
+                async def close_client(client: Any = client) -> None:
+                    with contextlib.suppress(Exception):
+                        await client.close()
 
                 if running is loop:
                     # Nothing can wait for it on its own loop.
-                    loop.create_task(close_all())
+                    loop.create_task(close_client())
                 elif loop.is_running() and not sys.is_finalizing():
-                    sync(loop, close_all, timeout=5.0)
+                    sync(loop, close_client, timeout=5.0)
         finally:
             super().close()
 
@@ -355,7 +369,7 @@ class AbfsFileSystem(TreeFileSystem):
         if self._is_hns_enabled is not None:
             return self._is_hns_enabled
 
-        blob_service, dfs_service = self._clients()
+        blob_service, dfs_service = self._blob_service(), self._dfs_service()
         last: BaseException | None = None
         try:
             info = await blob_service.get_account_information()
@@ -420,7 +434,7 @@ class AbfsFileSystem(TreeFileSystem):
         container, key = split_path(self._strip_protocol(path))
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Not deleting a container", path)
-        directory = self._clients()[1].get_directory_client(container, key)
+        directory = self._dfs_service().get_directory_client(container, key)
         with azure_errors(path):
             await directory.delete_directory()
 
@@ -432,7 +446,7 @@ class AbfsFileSystem(TreeFileSystem):
         if not container:
             return dict(_root_info)
 
-        blob_service, _ = self._clients()
+        blob_service = self._blob_service()
         container_client = blob_service.get_container_client(container)
         with azure_errors(path):
             if not key:
@@ -464,7 +478,7 @@ class AbfsFileSystem(TreeFileSystem):
         container, key = split_path(path)
         if not container:
             with azure_errors(path):
-                async for c in self._clients()[0].list_containers():
+                async for c in self._blob_service().list_containers():
                     yield {
                         **_folder_entry(c.name),
                         "last_modified": c.last_modified,
@@ -500,7 +514,7 @@ class AbfsFileSystem(TreeFileSystem):
 
     async def _ils_dfs(self, container: str, key: str) -> AsyncIterator[dict[str, Any]]:
         """One folder's paths, from the Data Lake API, as they come a page at a time."""
-        file_system = self._clients()[1].get_file_system_client(container)
+        file_system = self._dfs_service().get_file_system_client(container)
         async for p in file_system.get_paths(path=key or None, recursive=False):
             name = f"{container}/{p.name}"
             if p.is_directory:
@@ -529,7 +543,7 @@ class AbfsFileSystem(TreeFileSystem):
         folders yielded are kept, those of the files are not.
         """
         prefix = f"{key}/" if key else ""
-        container_client = self._clients()[0].get_container_client(container)
+        container_client = self._blob_service().get_container_client(container)
         folders: set[str] = set()
         async for item in container_client.walk_blobs(
             name_starts_with=prefix, delimiter="/", include=["metadata"]
@@ -557,7 +571,7 @@ class AbfsFileSystem(TreeFileSystem):
             await self._blob(container, key).delete_blob()
 
     async def _has_children(self, container: str, key: str) -> bool:
-        container_client = self._clients()[0].get_container_client(container)
+        container_client = self._blob_service().get_container_client(container)
         prefix = f"{key}/" if key else ""
         async for blob in container_client.list_blobs(
             name_starts_with=prefix, results_per_page=2
@@ -585,7 +599,7 @@ class AbfsFileSystem(TreeFileSystem):
             if not refused_by_service and await self._has_children(container, key):
                 raise OSError(errno.ENOTEMPTY, "Directory not empty", path)
             if not key:
-                await self._clients()[0].delete_container(container)
+                await self._blob_service().delete_container(container)
                 return
             try:
                 await self._blob(container, key).delete_blob()
@@ -613,7 +627,7 @@ class AbfsFileSystem(TreeFileSystem):
                 raise FileExistsError(errno.EEXIST, "File exists", path)
             return
 
-        blob_service, dfs_service = self._clients()
+        blob_service, dfs_service = self._blob_service(), self._dfs_service()
         with azure_errors(path):
             with contextlib.suppress(ResourceExistsError):
                 await blob_service.create_container(container)
@@ -689,7 +703,7 @@ class AbfsFileSystem(TreeFileSystem):
             await super()._mv_file(path1, path2)
             return
 
-        source = self._clients()[1].get_file_client(c1, k1)
+        source = self._dfs_service().get_file_client(c1, k1)
         with azure_errors(path1):
             try:
                 await source.rename_file(f"{c2}/{k2}")

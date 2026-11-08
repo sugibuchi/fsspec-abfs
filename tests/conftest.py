@@ -222,10 +222,10 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
         for fs in made:
             # close() only schedules the closing of clients on the running
             # loop, which may end first: they are closed here.
-            if fs._clients_loop is loop:
-                for client in (fs._blob_service, fs._dfs_service):
-                    await client.close()  # type: ignore[union-attr]
-                fs._blob_service = fs._dfs_service = fs._clients_loop = None
+            for made_client in (fs._blob_service_client, fs._dfs_service_client):
+                if made_client is not None and made_client[1] is loop:
+                    await made_client[0].close()
+            fs._blob_service_client = fs._dfs_service_client = None
             fs.close()
         if credential is not None:
             await credential.close()
