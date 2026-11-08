@@ -1,8 +1,13 @@
-"""AbfsFileSystem on the fake blob API: an account without a hierarchical namespace, or unknown."""
+"""AbfsFileSystem over HTTP, on accounts with and without a hierarchical namespace.
+
+The tests taking ``root`` run on the dummy server and on live accounts. Those taking ``dummy`` run on the dummy
+server only: they count the requests served, or switch the server's behaviour.
+"""
 
 from __future__ import annotations
 
 import errno
+import os
 
 import pytest
 
@@ -10,177 +15,335 @@ from fsspec_abfs.abfs import AbfsReadableFile, AbfsWritableFile
 
 
 @pytest.fixture
-def fs(make_fs, account):
-    account.put("c", "a/x.txt", b"hello")
-    account.put("c", "a/b/y.txt", b"world")
-    account.put("c", "z.txt", b"!")
-    account.containers["empty"] = {}
-    return make_fs()
+async def tree(fs, root):
+    """``a/x.txt``, ``a/b/y.txt`` and ``z.txt`` under the root."""
+    await fs._pipe_file(f"{root}/a/x.txt", b"hello")
+    await fs._pipe_file(f"{root}/a/b/y.txt", b"world")
+    await fs._pipe_file(f"{root}/z.txt", b"!")
+    return root
 
 
-async def test_ls_root(fs) -> None:
-    assert await fs._ls("", detail=False) == ["c", "empty"]
+def _small_blocks(f) -> None:
+    f.min_block_size = f.max_block_size = f.min_multipart_size = 4
 
 
-async def test_ls(fs, account) -> None:
-    assert sorted(await fs._ls("abfs://c", detail=False)) == ["c/a", "c/z.txt"]
-    entries = {e["name"]: e for e in await fs._ls("c/a")}
-    assert entries["c/a/b"]["type"] == "directory"
-    assert entries["c/a/x.txt"] == {**entries["c/a/x.txt"], "size": 5, "type": "file"}
-    # One listing per folder.
-    assert account.calls["walk_blobs"] == 2
+async def test_ls(fs, tree) -> None:
+    assert sorted(await fs._ls(tree, detail=False)) == [f"{tree}/a", f"{tree}/z.txt"]
+    entries = {e["name"]: e for e in await fs._ls(f"abfs://{tree}/a")}
+    assert entries[f"{tree}/a/b"]["type"] == "directory"
+    x = entries[f"{tree}/a/x.txt"]
+    assert (x["type"], x["size"]) == ("file", 5)
 
 
-async def test_ls_file_and_missing(fs) -> None:
-    assert await fs._ls("c/z.txt", detail=False) == ["c/z.txt"]
-    assert await fs._ls("empty", detail=False) == []
+async def test_ls_file_and_missing(fs, tree) -> None:
+    assert await fs._ls(f"{tree}/z.txt", detail=False) == [f"{tree}/z.txt"]
     with pytest.raises(FileNotFoundError):
-        await fs._ls("c/nothing")
+        await fs._ls(f"{tree}/nothing")
     with pytest.raises(FileNotFoundError):
-        await fs._ls("nocontainer/a")
+        await fs._ls("nocontainer0fsspecabfs/a")
 
 
-async def test_info(fs) -> None:
+async def test_empty_folder(fs, root, hns) -> None:
+    await fs._makedirs(f"{root}/empty")
+    if hns:
+        # A real folder: listed empty, and deleted by rmdir.
+        assert await fs._ls(f"{root}/empty") == []
+        assert await fs._isdir(f"{root}/empty")
+        await fs._rmdir(f"{root}/empty")
+    # Without HNS, a folder is made by its files: nothing was written.
+    assert not await fs._exists(f"{root}/empty")
+
+
+async def test_info(fs, tree) -> None:
     assert (await fs._info(""))["type"] == "directory"
-    assert (await fs._info("c"))["type"] == "directory"
-    assert (await fs._info("c/a"))["type"] == "directory"
-    info = await fs._info("c/a/x.txt")
-    assert (info["type"], info["size"], info["etag"]) == ("file", 5, '"1"')
-    for missing in ("c/nothing", "nocontainer"):
+    assert (await fs._info(tree.partition("/")[0]))["type"] == "directory"
+    assert (await fs._info(f"{tree}/a"))["type"] == "directory"
+    info = await fs._info(f"{tree}/a/x.txt")
+    assert (info["type"], info["size"]) == ("file", 5)
+    assert info["etag"]
+    for missing in (f"{tree}/nothing", "nocontainer0fsspecabfs"):
         with pytest.raises(FileNotFoundError):
             await fs._info(missing)
 
 
-async def test_find(fs) -> None:
-    assert await fs._find("c") == ["c/a/b/y.txt", "c/a/x.txt", "c/z.txt"]
+async def test_find(fs, tree) -> None:
+    assert await fs._find(tree) == [
+        f"{tree}/a/b/y.txt",
+        f"{tree}/a/x.txt",
+        f"{tree}/z.txt",
+    ]
 
 
-async def test_cat_and_pipe(fs, account) -> None:
-    assert await fs._cat_file("c/a/x.txt") == b"hello"
-    assert await fs._cat_file("c/a/x.txt", start=1, end=3) == b"el"
-    await fs._pipe_file("c/new/n.txt", b"data")
-    assert account.containers["c"]["new/n.txt"]["data"] == b"data"
+async def test_cat_and_pipe(fs, tree) -> None:
+    assert await fs._cat_file(f"{tree}/a/x.txt") == b"hello"
+    assert await fs._cat_file(f"{tree}/a/x.txt", start=1, end=3) == b"el"
+    await fs._pipe_file(f"{tree}/new/n.txt", b"data")
+    assert await fs._cat_file(f"{tree}/new/n.txt") == b"data"
     with pytest.raises(FileExistsError):
-        await fs._pipe_file("c/new/n.txt", b"again", mode="create")
+        await fs._pipe_file(f"{tree}/new/n.txt", b"again", mode="create")
+    assert await fs._cat_file(f"{tree}/new/n.txt") == b"data"
 
 
-async def test_multipart_write(fs, account) -> None:
-    f = await fs._open_file("c/big.bin", "wb")
-    f.min_block_size = f.max_block_size = f.min_multipart_size = 4
+async def test_multipart_write(fs, root) -> None:
+    f = await fs._open_file(f"{root}/big.bin", "wb")
     assert isinstance(f, AbfsWritableFile)
+    _small_blocks(f)
     await f._write(b"0123456789")
     await f.aclose()
-    assert account.containers["c"]["big.bin"]["data"] == b"0123456789"
-    assert account.calls["stage_block"] >= 2
-    assert account.calls["commit_block_list"] == 1
-    assert not account.staged
+    assert await fs._cat_file(f"{root}/big.bin") == b"0123456789"
 
 
-async def test_exclusive_multipart_write(fs, account) -> None:
-    f = await fs._open_file("c/z.txt", "xb")
-    f.min_block_size = f.max_block_size = f.min_multipart_size = 4
+async def test_exclusive_multipart_write(fs, tree) -> None:
+    f = await fs._open_file(f"{tree}/z.txt", "xb")
+    _small_blocks(f)
     await f._write(b"0123456789")
     with pytest.raises(FileExistsError):
         await f.aclose()
-    assert account.containers["c"]["z.txt"]["data"] == b"!"
+    assert await fs._cat_file(f"{tree}/z.txt") == b"!"
 
 
-async def test_read_changed(fs, account) -> None:
-    f = await fs._open_file("c/a/x.txt", "rb")
+async def test_read_changed(fs, tree) -> None:
+    f = await fs._open_file(f"{tree}/a/x.txt", "rb")
     assert isinstance(f, AbfsReadableFile)
-    account.put("c", "a/x.txt", b"HELLO")
+    await fs._pipe_file(f"{tree}/a/x.txt", b"HELLO")
     with pytest.raises(OSError) as info:
         await f._read()
     assert info.value.errno == errno.ESTALE
 
 
-async def test_open_folder(fs) -> None:
+async def test_open_folder(fs, tree) -> None:
     with pytest.raises(IsADirectoryError):
-        await fs.open_async("c/a")
+        await fs.open_async(f"{tree}/a")
 
 
-async def test_rm_recursive(fs, account) -> None:
-    await fs._rm("c/a", recursive=True)
-    assert sorted(account.containers["c"]) == ["z.txt"]
-    # Implicit folders: only the blobs are deleted.
-    assert account.calls["delete_blob"] == 2
+async def test_large_file(fs, root) -> None:
+    data = os.urandom(20 * 1024 * 1024)
+    await fs._pipe_file(f"{root}/big.bin", data)
+    assert await fs._cat_file(f"{root}/big.bin") == data
 
 
-async def test_copy_recursive(fs, account) -> None:
-    await fs._copy("c/a", "empty/a2", recursive=True)
-    assert sorted(account.containers["empty"]) == ["a2/b/y.txt", "a2/x.txt"]
-    assert account.calls["start_copy_from_url"] == 2
+async def test_rm_recursive(fs, tree) -> None:
+    await fs._rm(f"{tree}/a", recursive=True)
+    assert await fs._find(tree) == [f"{tree}/z.txt"]
+    # No folder left either, with HNS.
+    assert not await fs._exists(f"{tree}/a")
 
 
-async def test_cp_missing_source(fs) -> None:
+async def test_copy_recursive(fs, tree) -> None:
+    await fs._copy(f"{tree}/a", f"{tree}/a2", recursive=True)
+    assert await fs._find(f"{tree}/a2") == [f"{tree}/a2/b/y.txt", f"{tree}/a2/x.txt"]
+    assert await fs._cat_file(f"{tree}/a2/b/y.txt") == b"world"
+
+
+async def test_cp_missing_source(fs, tree) -> None:
     with pytest.raises(FileNotFoundError) as info:
-        await fs._cp_file("c/nothing", "c/copy")
-    assert info.value.filename == "c/nothing"
+        await fs._cp_file(f"{tree}/nothing", f"{tree}/copy")
+    assert info.value.filename == f"{tree}/nothing"
 
 
-async def test_mv_recursive(fs, account) -> None:
-    await fs._mv("c/a", "c/moved", recursive=True)
-    assert sorted(account.containers["c"]) == [
-        "moved/b/y.txt",
-        "moved/x.txt",
-        "z.txt",
+async def test_mv_recursive(fs, tree) -> None:
+    await fs._mv(f"{tree}/a", f"{tree}/moved", recursive=True)
+    assert await fs._find(tree) == [
+        f"{tree}/moved/b/y.txt",
+        f"{tree}/moved/x.txt",
+        f"{tree}/z.txt",
     ]
-    # Without HNS: server-side copies, then deletions.
-    assert account.calls["start_copy_from_url"] == 2
+    assert not await fs._exists(f"{tree}/a")
 
 
-async def test_makedirs_and_rmdir(fs, account) -> None:
-    await fs._makedirs("c/newdir", exist_ok=True)
-    assert "newdir" not in account.containers["c"]  # Implicit: nothing written.
+async def test_mv_file(fs, tree) -> None:
+    # Into a folder that does not exist yet.
+    await fs._mv(f"{tree}/z.txt", f"{tree}/new/deep/z.txt")
+    assert await fs._cat_file(f"{tree}/new/deep/z.txt") == b"!"
+    assert not await fs._exists(f"{tree}/z.txt")
+
+
+async def test_makedirs_and_rmdir(fs, tree, hns) -> None:
+    await fs._makedirs(f"{tree}/newdir", exist_ok=True)
+    assert await fs._exists(f"{tree}/newdir") is hns
     with pytest.raises(FileExistsError):
-        await fs._makedirs("c/a")
-    await fs._makedirs("newcontainer/d")
-    assert "newcontainer" in account.containers
+        await fs._makedirs(f"{tree}/a")
+    with pytest.raises(FileExistsError):
+        await fs._makedirs(f"{tree}/z.txt", exist_ok=True)
 
     with pytest.raises(OSError) as info:
-        await fs._rmdir("c/a")
+        await fs._rmdir(f"{tree}/a")
     assert info.value.errno == errno.ENOTEMPTY
     with pytest.raises(NotADirectoryError):
-        await fs._rmdir("c/z.txt")
-    await fs._rmdir("empty")
-    assert "empty" not in account.containers
+        await fs._rmdir(f"{tree}/z.txt")
+    assert await fs._exists(f"{tree}/a/x.txt")
 
 
-async def test_unknown_hns_marks_folders(make_fs, account, azure_error) -> None:
-    from azure.core.exceptions import HttpResponseError  # noqa: PLC0415
-
-    account.account_information = azure_error(HttpResponseError, "Forbidden", 403)
-    account.access_control = azure_error(HttpResponseError, "Forbidden", 403)
-    account.put("c", "a/x.txt", b"1")
-    fs = make_fs(is_hns_enabled=None)
-
-    # A marker blob, which is a real folder on an HNS account.
-    await fs._makedirs("c/a/d")
-    assert account.containers["c"]["a/d"]["metadata"] == {"hdi_isfolder": "true"}
-    account.put("c", "a/d/in.txt", b"2")
-    # The folder's blob and its prefix are one entry.
-    assert sorted(await fs._ls("c/a", detail=False)) == ["c/a/d", "c/a/x.txt"]
-    assert (await fs._info("c/a/d"))["type"] == "directory"
-
-    # Unknown: emptied folders are deleted, marker blobs too.
-    await fs._rm("c/a", recursive=True)
-    assert account.containers["c"] == {}
-
-
-def test_sync_api_and_transaction(make_fs, account) -> None:
-    from fsspec_abfs.abfs import AbfsFileSystem  # noqa: PLC0415
-
-    account.containers["c"] = {}
-    fs = AbfsFileSystem(
-        "https://acc.dfs.core.windows.net/",
-        is_hns_enabled=False,
-        skip_instance_cache=True,
-    )
+def test_sync_api_and_transaction(make_fs, root) -> None:
+    fs = make_fs(asynchronous=False)
+    fs.pipe(f"{root}/other.txt", b"x")
     with fs.transaction:
-        with fs.open("c/t.txt", "wb") as f:
+        with fs.open(f"{root}/t.txt", "wb") as f:
             f.write(b"abc")
-        assert "t.txt" not in account.containers["c"]
-    assert fs.cat("c/t.txt") == b"abc"
+        assert not fs.exists(f"{root}/t.txt")
+    assert fs.cat(f"{root}/t.txt") == b"abc"
     fs.close()
     with pytest.raises(RuntimeError):
-        fs.cat("c/t.txt")
+        fs.cat(f"{root}/t.txt")
+
+
+# The requests sent, on the dummy server.
+
+
+async def test_ls_requests(dummy, fs, tree, hns) -> None:
+    dummy.requests.clear()
+    await fs._ls(f"{tree}/a")
+    # One listing per folder: the Data Lake API's with HNS, the blob API's without.
+    assert dummy.operations() == (["ListPaths"] if hns else ["ListBlobs"])
+
+
+async def test_listing_pages(dummy, fs, root, hns) -> None:
+    for i in range(5):
+        await fs._pipe_file(f"{root}/{i}.txt", b"")
+    dummy.page_size = 2
+    dummy.requests.clear()
+    assert len(await fs._ls(root)) == 5
+    assert dummy.count("ListPaths" if hns else "ListBlobs") == 3
+
+
+async def test_blob_listing_of_folders(dummy, fs, tree) -> None:
+    # Unknown, so listed by the blob API. With HNS, it lists a folder twice:
+    # as a blob, and as a prefix.
+    fs._is_hns_enabled = None
+    dummy.failures["GetAccountInformation"] = (403, "AuthorizationPermissionMismatch")
+    dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure")
+    assert sorted(await fs._ls(tree, detail=False)) == [f"{tree}/a", f"{tree}/z.txt"]
+    assert dummy.count("ListBlobs") == 1
+
+
+async def test_multipart_requests(dummy, fs, root) -> None:
+    f = await fs._open_file(f"{root}/big.bin", "wb")
+    _small_blocks(f)
+    await f._write(b"0123456789")
+    await f.aclose()
+    assert dummy.count("PutBlock") >= 2
+    assert dummy.count("PutBlockList") == 1
+    assert dummy.count("PutBlob") == 0
+    assert not dummy.containers["c"].staged
+
+
+async def test_rm_requests(dummy, fs, tree, hns) -> None:
+    dummy.requests.clear()
+    await fs._rm(f"{tree}/a", recursive=True)
+    if hns:
+        # One recursive delete of the Data Lake API.
+        assert dummy.count("DeletePath") == 1
+        assert dummy.count("DeleteBlob") == 0
+    else:
+        # Implicit folders: only the blobs are deleted.
+        assert dummy.count("DeleteBlob") == 2
+    assert dummy.files("c") == {"work/z.txt": b"!"}
+
+
+@pytest.mark.hns_only
+async def test_mv_renames(dummy, fs, tree) -> None:
+    dummy.requests.clear()
+    await fs._mv(f"{tree}/a", f"{tree}/moved", recursive=True)
+    # A folder with all in it, in one atomic request.
+    assert dummy.count("RenamePath") == 1
+    assert dummy.count("CopyBlob") == 0
+    assert "work/moved/b" in dummy.folders("c")
+
+
+@pytest.mark.hns_only
+async def test_mv_file_creates_parents(dummy, fs, tree) -> None:
+    dummy.requests.clear()
+    await fs._mv_file(f"{tree}/z.txt", f"{tree}/new/deep/z.txt")
+    # Refused for the missing parent, which is created, then renamed again.
+    assert dummy.count("RenamePath") == 2
+    assert dummy.count("CreatePath") == 1
+    assert {"work/new", "work/new/deep"} <= set(dummy.folders("c"))
+
+
+@pytest.mark.flat_only
+async def test_mv_copies(dummy, fs, tree) -> None:
+    dummy.requests.clear()
+    await fs._mv(f"{tree}/a", f"{tree}/moved", recursive=True)
+    # Without HNS: server-side copies, then deletions.
+    assert dummy.count("CopyBlob") == 2
+    assert dummy.count("DeleteBlob") == 2
+    assert dummy.count("RenamePath") == 0
+
+
+async def test_makedirs_requests(dummy, fs, root, hns) -> None:
+    await fs._makedirs(f"{root}/d1/d2")
+    if hns:
+        # A real folder, and its parents, by one request.
+        assert dummy.count("CreatePath") == 1
+        assert dummy.folders("c") == ["work", "work/d1", "work/d1/d2"]
+    else:
+        assert dummy.count("CreatePath") == 0
+        assert dummy.containers["c"].blobs == {}
+
+
+@pytest.mark.hns_only
+async def test_rmdir_refused_by_service(dummy, fs, tree) -> None:
+    dummy.requests.clear()
+    with pytest.raises(OSError) as info:
+        await fs._rmdir(f"{tree}/a")
+    assert info.value.errno == errno.ENOTEMPTY
+    # The blob API refuses a folder with things in: no listing first.
+    assert dummy.count("ListBlobs") == 0
+    assert dummy.count("DeleteBlob") == 1
+
+
+async def test_pending_copy(dummy, fs, tree) -> None:
+    fs.copy_poll_interval = 0.001
+    dummy.copy_pending_reads = 2
+    dummy.requests.clear()
+    await fs._cp_file(f"{tree}/z.txt", f"{tree}/copy.txt")
+    # Pending twice, then done.
+    assert dummy.count("GetBlobProperties") == 3
+
+    dummy.copy_outcome = "failed"
+    with pytest.raises(OSError) as info:
+        await fs._cp_file(f"{tree}/z.txt", f"{tree}/copy2.txt")
+    assert info.value.errno == errno.EIO
+
+
+async def test_cp_missing_container(dummy, fs, tree) -> None:
+    with pytest.raises(FileNotFoundError) as info:
+        await fs._cp_file(f"{tree}/z.txt", "nocontainer/copy")
+    assert info.value.filename == "nocontainer/copy"
+
+
+async def test_unknown_hns_marks_folders(dummy, fs, root) -> None:
+    fs._is_hns_enabled = None
+    dummy.failures["GetAccountInformation"] = (403, "AuthorizationPermissionMismatch")
+    dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure")
+    await fs._pipe_file(f"{root}/a/x.txt", b"1")
+
+    # A blob marking a folder: a real folder with HNS, a marker blob without.
+    await fs._makedirs(f"{root}/a/d")
+    assert "work/a/d" in dummy.folders("c")
+    await fs._pipe_file(f"{root}/a/d/in.txt", b"2")
+    # The folder's blob and its prefix are one entry.
+    assert sorted(await fs._ls(f"{root}/a", detail=False)) == [
+        f"{root}/a/d",
+        f"{root}/a/x.txt",
+    ]
+    assert (await fs._info(f"{root}/a/d"))["type"] == "directory"
+
+    # Unknown: emptied folders are deleted, marker blobs too.
+    await fs._rm(f"{root}/a", recursive=True)
+    assert [n for n in dummy.containers["c"].blobs if n.startswith("work/a")] == []
+    assert fs.is_hns_enabled is None
+
+
+async def test_containers(dummy, fs, hns) -> None:
+    await fs._makedirs("newcontainer/d")
+    assert await fs._ls("", detail=False) == ["c", "newcontainer"]
+    if hns:
+        # Its folder d is in it.
+        with pytest.raises(OSError) as info:
+            await fs._rmdir("newcontainer")
+        assert info.value.errno == errno.ENOTEMPTY
+    else:
+        await fs._rmdir("newcontainer")
+    await fs._rmdir("c")
+    assert "c" not in dummy.containers

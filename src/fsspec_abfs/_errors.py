@@ -50,7 +50,9 @@ def describe(error: BaseException) -> str:
     if (status := getattr(error, "status_code", None)) is not None:
         parts.append(f"status={status}")
     if code := getattr(error, "error_code", None):
-        parts.append(f"code={code}")
+        # The SDK gives a code it knows as its StorageErrorCode enum, which
+        # formats as the member's name: its value is Azure's code.
+        parts.append(f"code={getattr(code, 'value', code)}")
     return ", ".join(parts)
 
 

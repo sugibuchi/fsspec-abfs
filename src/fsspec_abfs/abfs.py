@@ -59,6 +59,8 @@ if TYPE_CHECKING:
 
     from azure.storage.blob.aio import BlobClient
 
+    from ._paths import AccountEndpoints
+
 __all__ = [
     "HNS_PROFILE",
     "NO_HNS_PROFILE",
@@ -226,9 +228,12 @@ class AbfsFileSystem(TreeFileSystem):
         is_hns_enabled: bool | None = None,
         operation_concurrency: int | asyncio.Semaphore | None = None,
         io_concurrency: int | asyncio.Semaphore | None = None,
+        _endpoints: AccountEndpoints | None = None,
         **storage_options: Any,
     ) -> None:
-        self.endpoints = parse_account_url(account_url)
+        # `_endpoints` is for tests and emulators only: their endpoints, e.g. on
+        # http://127.0.0.1, are no account URL. account_url is then ignored.
+        self.endpoints = _endpoints or parse_account_url(account_url)
         self.account_url = self.endpoints.dfs_url
         self.credential = credential
         # Set before TreeFileSystem's check of the profile, which reads it.
@@ -262,13 +267,6 @@ class AbfsFileSystem(TreeFileSystem):
 
     # The clients.
 
-    def _make_clients(self) -> tuple[BlobServiceClient, DataLakeServiceClient]:
-        """Both clients, on the account's two endpoints, with the same credential."""
-        return (
-            BlobServiceClient(self.endpoints.blob_url, credential=self.credential),
-            DataLakeServiceClient(self.endpoints.dfs_url, credential=self.credential),
-        )
-
     def _clients(self) -> tuple[BlobServiceClient, DataLakeServiceClient]:
         """The clients of the running loop, made on first use there.
 
@@ -279,7 +277,13 @@ class AbfsFileSystem(TreeFileSystem):
             raise RuntimeError("The file system is already closed")
         loop = asyncio.get_running_loop()
         if self._blob_service is None or self._clients_loop is not loop:
-            self._blob_service, self._dfs_service = self._make_clients()
+            # Both on the account's two endpoints, with the same credential.
+            self._blob_service = BlobServiceClient(
+                self.endpoints.blob_url, credential=self.credential
+            )
+            self._dfs_service = DataLakeServiceClient(
+                self.endpoints.dfs_url, credential=self.credential
+            )
             self._clients_loop = loop
         return self._blob_service, self._dfs_service  # type: ignore[return-value]
 
@@ -820,7 +824,9 @@ class AbfsWritableFile(AdaptiveWritableFile):
         """Commit only if no blob exists, for mode "xb"."""
         if not self.exclusive:
             return {}
-        return {"etag": "*", "match_condition": MatchConditions.IfMissing}
+        # The SDK sends If-None-Match: * itself. An etag given too would not be
+        # taken, but passed on to the HTTP session, which refuses it.
+        return {"match_condition": MatchConditions.IfMissing}
 
     def _exists_error(self, e: AzureError) -> OSError:
         return FileExistsError(errno.EEXIST, f"File exists ({describe(e)})", self.path)

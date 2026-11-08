@@ -45,8 +45,11 @@ Changelog = "https://github.com/sugibuchi/fsspec-abfs/releases"
 
 [dependency-groups]
 dev = [
+    # The dummy API server of the tests, tests/dummy_api.py.
+    "fastapi>=0.162.2",
     # The command copying the strategies, and their simulated file system.
     "fsspec-alt-strategies-impl[cli]>=0.1,<1",
+    "hypercorn>=0.18.0",
     "pre-commit>=4.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.0",
@@ -78,6 +81,8 @@ cache-keys = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The tests import the dummy server, tests/dummy_api.py, by its module name.
+pythonpath = ["tests"]
 addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

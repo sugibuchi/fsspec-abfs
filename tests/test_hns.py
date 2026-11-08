@@ -1,70 +1,64 @@
-"""Whether the account has a hierarchical namespace, and the profile that follows."""
+"""Whether the account has a hierarchical namespace, and the profile that follows.
+
+The probe runs over HTTP: the dummy server refuses the account information, or the root ACL, as Azure does.
+"""
 
 from __future__ import annotations
 
 import logging
 
 import pytest
-from azure.core.exceptions import HttpResponseError
 
 from fsspec_abfs.abfs import HNS_PROFILE, NO_HNS_PROFILE, UNKNOWN_HNS_PROFILE
+
+_REFUSED = (403, "AuthorizationPermissionMismatch")
 
 
 @pytest.mark.parametrize(
     ("declared", "profile"),
     [(True, HNS_PROFILE), (False, NO_HNS_PROFILE), (None, UNKNOWN_HNS_PROFILE)],
 )
-def test_declared(make_fs, account, declared, profile) -> None:
+def test_declared(dummy, make_fs, declared, profile) -> None:
     fs = make_fs(is_hns_enabled=declared)
     assert fs.is_hns_enabled is declared
     assert fs.storage_profile == profile
     assert (fs._rm_tree is not None) is bool(declared)
-    assert not account.calls
+    assert dummy.requests == []
 
 
-@pytest.mark.parametrize("answer", [True, False])
-async def test_account_information(make_fs, account, answer) -> None:
-    account.account_information = {"is_hns_enabled": answer}
+async def test_probe(make_fs, root, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("c") is answer
-    assert await fs._hns("c") is answer
-    assert fs.is_hns_enabled is answer
-    assert fs.storage_profile == (HNS_PROFILE if answer else NO_HNS_PROFILE)
-    assert account.calls == {"get_account_information": 1}
+    assert await fs._hns(root.partition("/")[0]) is hns
+    assert fs.storage_profile == (HNS_PROFILE if hns else NO_HNS_PROFILE)
 
 
-async def test_root_acl(make_fs, account, azure_error) -> None:
-    account.account_information = azure_error(
-        HttpResponseError, "AuthorizationPermissionMismatch", 403
-    )
-    account.access_control = {"acl": "user::rwx"}
+async def test_account_information(dummy, make_fs, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("c") is True
-    assert account.calls == {"get_account_information": 1, "get_access_control": 1}
+    assert await fs._hns("c") is hns
+    assert await fs._hns("c") is hns
+    assert dummy.operations() == ["GetAccountInformation"]
 
 
-@pytest.mark.parametrize(
-    ("code", "status"),
-    [
-        ("HierarchicalNamespaceNotEnabled", 400),
-        ("EndpointUnsupportedAccountFeatures", 409),
-    ],
-)
-async def test_root_acl_refused(make_fs, account, azure_error, code, status) -> None:
-    account.account_information = azure_error(
-        HttpResponseError, "AuthorizationPermissionMismatch", 403
-    )
-    account.access_control = azure_error(HttpResponseError, code, status)
+async def test_root_acl(dummy, make_fs, hns) -> None:
+    # Without HNS, the Data Lake API refuses: HierarchicalNamespaceNotEnabled.
+    dummy.failures["GetAccountInformation"] = _REFUSED
+    fs = make_fs(is_hns_enabled=None)
+    assert await fs._hns("c") is hns
+    assert dummy.operations() == ["GetAccountInformation", "GetAccessControl"]
+
+
+@pytest.mark.flat_only
+async def test_root_acl_unsupported_features(dummy, make_fs) -> None:
+    dummy.failures["GetAccountInformation"] = _REFUSED
+    dummy.failures["GetAccessControl"] = (409, "EndpointUnsupportedAccountFeatures")
     fs = make_fs(is_hns_enabled=None)
     assert await fs._hns("c") is False
     assert fs.is_hns_enabled is False
 
 
-async def test_unknown_not_kept(make_fs, account, azure_error, caplog) -> None:
-    account.account_information = azure_error(
-        HttpResponseError, "AuthorizationPermissionMismatch", 403
-    )
-    account.access_control = azure_error(HttpResponseError, "AuthorizationFailure", 403)
+async def test_unknown_not_kept(dummy, make_fs, hns, caplog) -> None:
+    dummy.failures["GetAccountInformation"] = _REFUSED
+    dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure", "sig=SECRET")
     fs = make_fs(is_hns_enabled=None)
     with caplog.at_level(logging.DEBUG, logger="fsspec_abfs.abfs"):
         assert await fs._hns("c") is None
@@ -72,7 +66,8 @@ async def test_unknown_not_kept(make_fs, account, azure_error, caplog) -> None:
     assert fs.is_hns_enabled is None
     assert fs.storage_profile == UNKNOWN_HNS_PROFILE
     # Asked again, as unknown is not kept.
-    assert account.calls == {"get_account_information": 2, "get_access_control": 2}
+    assert dummy.count("GetAccountInformation") == 2
+    assert dummy.count("GetAccessControl") == 2
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
@@ -80,32 +75,23 @@ async def test_unknown_not_kept(make_fs, account, azure_error, caplog) -> None:
     assert "SECRET" not in caplog.text  # Never Azure's message.
 
     # Once the account answers, it is kept.
-    account.access_control = {"acl": ""}
-    assert await fs._hns("c") is True
-    assert fs.storage_profile == HNS_PROFILE
+    del dummy.failures["GetAccessControl"]
+    assert await fs._hns("c") is hns
+    assert fs.is_hns_enabled is hns
 
 
-async def test_no_container(make_fs, account, azure_error) -> None:
-    account.account_information = azure_error(
-        HttpResponseError, "AuthorizationPermissionMismatch", 403
-    )
+async def test_no_container(dummy, make_fs) -> None:
+    dummy.failures["GetAccountInformation"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
     assert await fs._hns("") is None
-    assert "get_access_control" not in account.calls
+    assert dummy.count("GetAccessControl") == 0
 
 
-async def test_asked_once_known(make_fs, account) -> None:
+async def test_operations_ask_first(dummy, make_fs, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("c") is False
-    assert await fs._hns("c") is False
-    assert account.calls == {"get_account_information": 1}
-
-
-async def test_operations_ask_first(make_fs, account) -> None:
-    account.account_information = {"is_hns_enabled": False}
-    account.put("c", "a/x", b"1")
-    fs = make_fs(is_hns_enabled=None)
+    await fs._pipe_file("c/a/x", b"1")
     await fs._rm("c/a", recursive=True)
-    assert fs.is_hns_enabled is False
-    # With the profile of no HNS: no folder to delete.
-    assert account.containers["c"] == {}
+    assert fs.is_hns_enabled is hns
+    # With the account's profile: one recursive delete with HNS.
+    assert dummy.count("DeletePath") == (1 if hns else 0)
+    assert dummy.containers["c"].blobs == {}
