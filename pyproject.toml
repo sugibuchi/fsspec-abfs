@@ -31,6 +31,12 @@ dependencies = [
     "aiohttp",
 ]
 
+# fsspec loads the class only when a URL of the protocol is opened: importing
+# fsspec stays cheap. These replace adlfs' registration of the same protocols.
+[project.entry-points."fsspec.specs"]
+abfs = "fsspec_abfs.abfs:AbfsFileSystem"
+abfss = "fsspec_abfs.abfs:AbfsFileSystem"
+
 [project.urls]
 Homepage = "https://github.com/sugibuchi/fsspec-abfs"
 Source = "https://github.com/sugibuchi/fsspec-abfs"

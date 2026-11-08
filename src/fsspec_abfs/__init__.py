@@ -9,3 +9,15 @@ try:
     from ._version import __version__ as __version__
 except ImportError:  # A source tree never built: no version file.
     __version__ = "0.0.0"
+
+
+def __getattr__(name: str) -> object:
+    # Imported on first use, as the Azure SDK is slow to import.
+    if name == "AbfsFileSystem":
+        from .abfs import AbfsFileSystem  # noqa: PLC0415
+
+        return AbfsFileSystem
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = ["AbfsFileSystem", "__version__"]
