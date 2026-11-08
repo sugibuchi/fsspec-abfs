@@ -240,9 +240,10 @@ class AbfsFileSystem(TreeFileSystem):
         self._is_hns_enabled: bool | None = is_hns_enabled
         self._hns_warned = False
 
-        # Each client with the loop it was made on.
-        self._blob_service_client: tuple[BlobServiceClient, Any] | None = None
-        self._dfs_service_client: tuple[DataLakeServiceClient, Any] | None = None
+        # Both clients, made together on the loop of their first use.
+        self._blob_service_client: BlobServiceClient | None = None
+        self._dfs_service_client: DataLakeServiceClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
         super().__init__(
             operation_concurrency=operation_concurrency or self.operation_concurrency,
@@ -270,33 +271,30 @@ class AbfsFileSystem(TreeFileSystem):
     # The SDK's async clients hold an aiohttp session, bound to the loop of its
     # first request: a filesystem used on another loop gets new ones.
 
-    def _blob_service(self) -> BlobServiceClient:
-        """The Blob service client of the running loop, made on first use there."""
-        loop = self._running_loop()
-        if (
-            self._blob_service_client is None
-            or self._blob_service_client[1] is not loop
-        ):
-            client = BlobServiceClient(
-                self.endpoints.blob_url, credential=self.credential
-            )
-            self._blob_service_client = (client, loop)
-        return self._blob_service_client[0]
-
-    def _dfs_service(self) -> DataLakeServiceClient:
-        """The Data Lake service client of the running loop, made on first use there."""
-        loop = self._running_loop()
-        if self._dfs_service_client is None or self._dfs_service_client[1] is not loop:
-            client = DataLakeServiceClient(
-                self.endpoints.dfs_url, credential=self.credential
-            )
-            self._dfs_service_client = (client, loop)
-        return self._dfs_service_client[0]
-
-    def _running_loop(self) -> asyncio.AbstractEventLoop:
+    def _ensure_service_clients(self) -> None:
+        """Make both service clients on the running loop, unless made there already."""
         if self._closed:
             raise RuntimeError("The file system is already closed")
-        return asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
+        if self._client_loop is not loop:
+            # Both on the account's two endpoints, with the same credential.
+            self._blob_service_client = BlobServiceClient(
+                self.endpoints.blob_url, credential=self.credential
+            )
+            self._dfs_service_client = DataLakeServiceClient(
+                self.endpoints.dfs_url, credential=self.credential
+            )
+            self._client_loop = loop
+
+    def _blob_service(self) -> BlobServiceClient:
+        """The Blob service client of the running loop."""
+        self._ensure_service_clients()
+        return self._blob_service_client  # type: ignore[return-value]
+
+    def _dfs_service(self) -> DataLakeServiceClient:
+        """The Data Lake service client of the running loop."""
+        self._ensure_service_clients()
+        return self._dfs_service_client  # type: ignore[return-value]
 
     def _blob(self, container: str, key: str) -> BlobClient:
         return self._blob_service().get_blob_client(container, key)
@@ -306,29 +304,29 @@ class AbfsFileSystem(TreeFileSystem):
     def close(self) -> None:
         """Close both clients, then what `TreeFileSystem` holds. A closed filesystem refuses further calls."""
         try:
-            made = [
+            clients = [
                 c for c in (self._blob_service_client, self._dfs_service_client) if c
             ]
+            loop = self._client_loop
             self._blob_service_client = self._dfs_service_client = None
+            self._client_loop = None
             self._closed = True
-            try:
-                running = asyncio.get_running_loop()
-            except RuntimeError:
-                running = None
+            if clients and loop is not None and not loop.is_closed():
+                try:
+                    running = asyncio.get_running_loop()
+                except RuntimeError:
+                    running = None
 
-            for client, loop in made:
-                if loop.is_closed():
-                    continue
-
-                async def close_client(client: Any = client) -> None:
-                    with contextlib.suppress(Exception):
-                        await client.close()
+                async def close_clients() -> None:
+                    for client in clients:
+                        with contextlib.suppress(Exception):
+                            await client.close()
 
                 if running is loop:
                     # Nothing can wait for it on its own loop.
-                    loop.create_task(close_client())
+                    loop.create_task(close_clients())
                 elif loop.is_running() and not sys.is_finalizing():
-                    sync(loop, close_client, timeout=5.0)
+                    sync(loop, close_clients, timeout=5.0)
         finally:
             super().close()
 
