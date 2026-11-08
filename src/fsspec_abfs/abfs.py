@@ -233,9 +233,8 @@ class AbfsFileSystem(TreeFileSystem):
         **storage_options: Any,
     ) -> None:
         self.account_name, self.account_domain = parse_account_url(account_url)
-        self.account_url = f"https://{self.account_name}.dfs.{self.account_domain}"
         # The endpoints the clients are made on, at first use.
-        self._dfs_url = self.account_url
+        self._dfs_url = f"https://{self.account_name}.dfs.{self.account_domain}"
         self._blob_url = f"https://{self.account_name}.blob.{self.account_domain}"
         self.storage_credential = StorageCredential.from_credential(
             credential, **storage_options

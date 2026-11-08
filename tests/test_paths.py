@@ -21,7 +21,6 @@ def test_account_url(url: str, domain: str) -> None:
     assert parse_account_url(url) == ("acc", domain)
     fs = AbfsFileSystem(url, skip_instance_cache=True)
     assert (fs.account_name, fs.account_domain) == ("acc", domain)
-    assert fs.account_url == f"https://acc.dfs.{domain}"
     assert (fs._dfs_url, fs._blob_url) == (
         f"https://acc.dfs.{domain}",
         f"https://acc.blob.{domain}",
