@@ -60,7 +60,6 @@ if TYPE_CHECKING:
 
     from azure.storage.blob.aio import BlobClient
 
-    from ._paths import AccountEndpoints
 
 __all__ = [
     "HNS_PROFILE",
@@ -231,13 +230,17 @@ class AbfsFileSystem(TreeFileSystem):
         is_hns_enabled: bool | None = None,
         operation_concurrency: int | asyncio.Semaphore | None = None,
         io_concurrency: int | asyncio.Semaphore | None = None,
-        _endpoints: AccountEndpoints | None = None,
+        _endpoint_urls: tuple[str, str] | None = None,
         **storage_options: Any,
     ) -> None:
-        # `_endpoints` is for tests and emulators only: their endpoints, e.g. on
-        # http://127.0.0.1, are no account URL. account_url is then ignored.
-        self.endpoints = _endpoints or parse_account_url(account_url)
-        self.account_url = self.endpoints.dfs_url
+        self.account_name, self.account_domain = parse_account_url(account_url)
+        self.account_url = f"https://{self.account_name}.dfs.{self.account_domain}"
+        # `_endpoint_urls`, (dfs, blob), is for tests and emulators only: their
+        # endpoints, e.g. on http://127.0.0.1, are no account's URL.
+        self._dfs_url, self._blob_url = _endpoint_urls or (
+            self.account_url,
+            f"https://{self.account_name}.blob.{self.account_domain}",
+        )
         self.storage_credential = StorageCredential.from_credential(
             credential, **storage_options
         )
@@ -289,10 +292,10 @@ class AbfsFileSystem(TreeFileSystem):
         if self._client_loop is not loop:
             # Both on the account's two endpoints, with the same credential.
             self._blob_service_client = BlobServiceClient(
-                self.endpoints.blob_url, credential=self.storage_credential.value
+                self._blob_url, credential=self.storage_credential.value
             )
             self._dfs_service_client = DataLakeServiceClient(
-                self.endpoints.dfs_url, credential=self.storage_credential.value
+                self._dfs_url, credential=self.storage_credential.value
             )
             self._client_loop = loop
 
@@ -414,7 +417,7 @@ class AbfsFileSystem(TreeFileSystem):
                 "Cannot tell whether the account %s has a hierarchical namespace"
                 " (%s): using the blob API, and moves by copy and delete, until"
                 " known. Pass is_hns_enabled to say.",
-                self.endpoints.account_name,
+                self.account_name,
                 describe(last) if last else "no container to ask",
             )
         return None

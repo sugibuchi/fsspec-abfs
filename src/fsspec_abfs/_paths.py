@@ -14,10 +14,8 @@ where the domain is Azure's, ``core.windows.net``, or Fabric's OneLake,
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
 __all__ = [
-    "AccountEndpoints",
     "account_url_of",
     "parse_account_url",
     "split_path",
@@ -41,17 +39,8 @@ _URL = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class AccountEndpoints:
-    """A storage account's name and the URLs of its two endpoints."""
-
-    account_name: str
-    dfs_url: str
-    blob_url: str
-
-
-def parse_account_url(account_url: str) -> AccountEndpoints:
-    """The endpoints of the account an endpoint's URL names.
+def parse_account_url(account_url: str) -> tuple[str, str]:
+    """The name and domain of the account an endpoint's URL names, e.g. ("acc", "core.windows.net").
 
     Raises ValueError for any other URL, e.g. one with a path, as a container
     or a path given here would be ignored silently otherwise.
@@ -62,13 +51,7 @@ def parse_account_url(account_url: str) -> AccountEndpoints:
             "account_url must be an account's dfs or blob endpoint, e.g. "
             f"https://<account>.dfs.core.windows.net/: {account_url!r}"
         )
-    account = m.group("account").lower()
-    domain = m.group("domain").lower()
-    return AccountEndpoints(
-        account_name=account,
-        dfs_url=f"https://{account}.dfs.{domain}",
-        blob_url=f"https://{account}.blob.{domain}",
-    )
+    return m.group("account").lower(), m.group("domain").lower()
 
 
 def account_url_of(url: str) -> str | None:

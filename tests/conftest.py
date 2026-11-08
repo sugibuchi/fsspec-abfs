@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from dummy_api import dummy_storage, serve_app
 
-from fsspec_abfs._paths import AccountEndpoints
 from fsspec_abfs.abfs import AbfsFileSystem
 
 if TYPE_CHECKING:
@@ -136,11 +135,9 @@ def dummy_api(server_event_loop):
 
 
 @pytest.fixture(scope="session")
-def dummy_endpoints(dummy_api: str) -> AccountEndpoints:
-    """The dummy account's endpoints, which `AbfsFileSystem` takes by its `_endpoints`."""
-    return AccountEndpoints(
-        "dummy", dfs_url=f"{dummy_api}/dfs", blob_url=f"{dummy_api}/blob"
-    )
+def dummy_endpoints(dummy_api: str) -> tuple[str, str]:
+    """The dummy account's dfs and blob URLs, which `AbfsFileSystem` takes by its `_endpoint_urls`."""
+    return f"{dummy_api}/dfs", f"{dummy_api}/blob"
 
 
 @pytest.fixture
@@ -188,8 +185,9 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
     credential = None
     if api == "dummy":
         request.getfixturevalue("dummy")
-        endpoints: AccountEndpoints | None = request.getfixturevalue("dummy_endpoints")
-        url = endpoints.dfs_url
+        # A real account's URL, as the constructor takes, with the dummy's endpoints.
+        endpoints: tuple[str, str] | None = request.getfixturevalue("dummy_endpoints")
+        url = "https://dummy.dfs.core.windows.net/"
     else:
         from azure.identity.aio import DefaultAzureCredential  # noqa: PLC0415
 
@@ -201,7 +199,11 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
         kwargs.setdefault("is_hns_enabled", hns)
         kwargs.setdefault("asynchronous", True)
         fs = AbfsFileSystem(
-            url, credential, _endpoints=endpoints, skip_instance_cache=True, **kwargs
+            url,
+            credential,
+            _endpoint_urls=endpoints,
+            skip_instance_cache=True,
+            **kwargs,
         )
         made.append(fs)
         return fs

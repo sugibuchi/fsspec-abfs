@@ -57,8 +57,8 @@ side only:
 over HTTP, so their requests, errors and paging run as against Azure. One store serves both APIs, under two path
 prefixes: `/blob` and `/dfs`.
 
-`AbfsFileSystem` only accepts Azure's account URLs. Its private keyword `_endpoints`, an `AccountEndpoints`, takes
-other ones for tests and emulators. The dummy needs no credential, and the tests send none: the SDK refuses tokens
+`AbfsFileSystem` only accepts Azure's account URLs. Its private keyword `_endpoint_urls`, the dfs and blob URLs,
+takes other ones for tests and emulators. The dummy needs no credential, and the tests send none: the SDK refuses tokens
 over plain HTTP.
 
 It answers these operations of the blob API:
