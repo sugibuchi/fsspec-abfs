@@ -1,0 +1,56 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# Written by hatch-vcs when the package is built
+src/fsspec_abfs/_version.py
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tests, coverage and type checkers
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# --- IPython / Jupyter ---
+.ipynb_checkpoints/
+
+# --- JetBrains IDEs (IntelliJ IDEA, PyCharm, ...) ---
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# --- Claude Code ---
+.claude/worktrees/
+.claude/settings.local.json
+
+# --- Environment and secrets ---
+.env
+.env.*
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+desktop.ini
