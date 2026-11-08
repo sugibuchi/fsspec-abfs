@@ -136,7 +136,7 @@ def dummy_api(server_event_loop):
 
 @pytest.fixture(scope="session")
 def dummy_endpoints(dummy_api: str) -> tuple[str, str]:
-    """The dummy account's dfs and blob URLs, which `AbfsFileSystem` takes by its `_endpoint_urls`."""
+    """The dummy account's dfs and blob URLs, set on a file system before its first request."""
     return f"{dummy_api}/dfs", f"{dummy_api}/blob"
 
 
@@ -198,13 +198,10 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
     def make(**kwargs: Any) -> AbfsFileSystem:
         kwargs.setdefault("is_hns_enabled", hns)
         kwargs.setdefault("asynchronous", True)
-        fs = AbfsFileSystem(
-            url,
-            credential,
-            _endpoint_urls=endpoints,
-            skip_instance_cache=True,
-            **kwargs,
-        )
+        fs = AbfsFileSystem(url, credential, skip_instance_cache=True, **kwargs)
+        if endpoints is not None:
+            # The clients are made on these at first use: the dummy's, then.
+            fs._dfs_url, fs._blob_url = endpoints
         made.append(fs)
         return fs
 

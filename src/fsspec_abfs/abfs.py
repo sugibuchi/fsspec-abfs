@@ -230,17 +230,13 @@ class AbfsFileSystem(TreeFileSystem):
         is_hns_enabled: bool | None = None,
         operation_concurrency: int | asyncio.Semaphore | None = None,
         io_concurrency: int | asyncio.Semaphore | None = None,
-        _endpoint_urls: tuple[str, str] | None = None,
         **storage_options: Any,
     ) -> None:
         self.account_name, self.account_domain = parse_account_url(account_url)
         self.account_url = f"https://{self.account_name}.dfs.{self.account_domain}"
-        # `_endpoint_urls`, (dfs, blob), is for tests and emulators only: their
-        # endpoints, e.g. on http://127.0.0.1, are no account's URL.
-        self._dfs_url, self._blob_url = _endpoint_urls or (
-            self.account_url,
-            f"https://{self.account_name}.blob.{self.account_domain}",
-        )
+        # The endpoints the clients are made on, at first use.
+        self._dfs_url = self.account_url
+        self._blob_url = f"https://{self.account_name}.blob.{self.account_domain}"
         self.storage_credential = StorageCredential.from_credential(
             credential, **storage_options
         )
