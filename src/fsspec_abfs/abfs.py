@@ -39,7 +39,7 @@ from azure.core.exceptions import (
 from azure.storage.blob import BlobBlock, BlobSasPermissions, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.filedatalake.aio import DataLakeServiceClient
-from fsspec.asyn import sync
+from fsspec.asyn import sync, sync_wrapper
 from fsspec_alt_strategies.profile import StorageProfile
 
 from ._contrib.strategy.files.adaptive import (
@@ -53,7 +53,7 @@ from ._contrib.strategy.files.fsspec_transaction import (
 )
 from ._contrib.strategy.tree.filesystem import TreeFileSystem
 from ._errors import azure_errors, describe, os_error
-from ._listing import list_blobs_flat
+from ._listing import bare_etag, list_blobs_flat
 from ._paths import (
     DEFAULT_DOMAIN,
     AccountDomain,
@@ -167,7 +167,7 @@ def _blob_entry(container: str, props: Any) -> dict[str, Any]:
             "size": 0,
             "type": "directory",
             "last_modified": props.last_modified,
-            "etag": props.etag,
+            "etag": bare_etag(props.etag),
         }
     else:
         return {
@@ -175,7 +175,7 @@ def _blob_entry(container: str, props: Any) -> dict[str, Any]:
             "size": props.size,
             "type": "file",
             "last_modified": props.last_modified,
-            "etag": props.etag,
+            "etag": bare_etag(props.etag),
             "content_type": getattr(props.content_settings, "content_type", None),
         }
 
@@ -636,7 +636,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 return {
                     **_folder_entry(f"/{container}"),
                     "last_modified": props.last_modified,
-                    "etag": props.etag,
+                    "etag": bare_etag(props.etag),
                 }
 
             try:
@@ -701,7 +701,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             yield {
                 **_folder_entry(f"/{c.name}"),
                 "last_modified": c.last_modified,
-                "etag": c.etag,
+                "etag": bare_etag(c.etag),
             }
             if recursive:
                 async for entry in self._ils(f"/{c.name}", recursive=True):
@@ -723,7 +723,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 yield {
                     **_folder_entry(name),
                     "last_modified": modified,
-                    "etag": p.etag,
+                    "etag": bare_etag(p.etag),
                 }
             else:
                 yield {
@@ -731,7 +731,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                     "size": p.content_length,
                     "type": "file",
                     "last_modified": modified,
-                    "etag": p.etag,
+                    "etag": bare_etag(p.etag),
                 }
 
     async def _ils_blob(
@@ -922,7 +922,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         if status != "success":
             raise OSError(errno.EIO, f"Copy from {source} ended as {status}", path)
 
-    # Signed URLs, for a copy by another account: see `AbfsFileSystems`.
+    # Signed URLs, e.g. for another account's server-side copy.
 
     async def _get_user_delegation_key(self) -> UserDelegationKey:
         """The account's user delegation key, asked for once and kept until it nears its expiry.
@@ -931,7 +931,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         of the credential. Asking for one needs the action
         ``generateUserDelegationKey``, which Storage Blob Data Reader,
         Contributor and Owner, and Storage Blob Delegator, give at the
-        account's level.
+        account's level: see Azure's
+        https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac.
 
         The key is asked for once, valid for `_user_delegation_key_lifetime`,
         and kept. A new one is asked for when the kept one has less than
@@ -969,32 +970,38 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 self._user_delegation_key = key
             return key
 
-    async def _readable_url(self, path: str) -> str:
-        """A blob's URL, with what lets another account read it, by the credential.
+    async def _sign(self, path: str, expiration: int = 100, **kwargs: Any) -> str:
+        """A blob's URL that reads it with no other credential, for ``expiration`` seconds.
 
-        - A token credential signs a user delegation SAS, by
-          `_get_user_delegation_key`.
-        - A shared key signs a SAS itself.
-        - A SAS is in the client's URL already.
-        - Anonymous, the URL carries nothing: the blob must be public.
+        What the URL carries depends on the credential:
 
-        A SAS signed here reads that blob only, and is valid until its key
-        expires, or as long as a key lives.
+        - a token credential signs a user delegation SAS, with the account's
+          key, see `_get_user_delegation_key`;
+        - a shared key signs a SAS;
+        - a SAS is the URL's own, valid as long as it is;
+        - anonymous, the URL carries nothing: the blob must be public.
+
+        A SAS signed here reads that blob only. One of a user delegation key
+        expires with the key at the latest: 12 hours, at least, by
+        `_user_delegation_key_margin`. It is the URL of the blob endpoint, as
+        another account's server-side copy takes it.
         """
         container, key = self.split_path(path)
+        path = self._strip_protocol(path)
+        if not key:
+            raise IsADirectoryError(errno.EISDIR, "Is a container", path)
+
         url = self._blob(container, key).url
-        start = datetime.now(UTC) - _CLOCK_SKEW
+        now = datetime.now(UTC)
+        expiry = now + timedelta(seconds=expiration)
         if self.credential.kind == "TokenCredential":
             delegation = await self._get_user_delegation_key()
             signing = {
                 "user_delegation_key": delegation,
-                "expiry": _key_expiry(delegation),
+                "expiry": min(expiry, _key_expiry(delegation)),
             }
         elif self.credential.kind == "SharedKey":
-            signing = {
-                "account_key": self.credential.value,
-                "expiry": start + self._user_delegation_key_lifetime,
-            }
+            signing = {"account_key": self.credential.value, "expiry": expiry}
         else:
             return url
 
@@ -1003,10 +1010,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             container,
             key,
             permission=BlobSasPermissions(read=True),
-            start=start,
+            start=now - _CLOCK_SKEW,
             **signing,
         )
         return f"{url}?{sas}"
+
+    sign = sync_wrapper(_sign)
 
     async def _cp_file_entry(
         self, entry: dict[str, Any], path2: str, **kwargs: Any
@@ -1196,7 +1205,8 @@ class AbfsReadableFile(AdaptiveReadableFile):
         conditions: dict[str, Any] = {}
         if self.version is not None:
             conditions = {
-                "etag": self.version,
+                # An entry's ETag is bare: the header takes it quoted.
+                "etag": f'"{self.version}"',
                 "match_condition": MatchConditions.IfNotModified,
             }
         with azure_errors(self.path):
@@ -1209,7 +1219,7 @@ class AbfsReadableFile(AdaptiveReadableFile):
                 raise OSError(
                     errno.ESTALE, f"Changed while read, from version {self.version}"
                 ) from e
-        self._check_version(downloader.properties.etag)
+        self._check_version(bare_etag(downloader.properties.etag))
         return data
 
 

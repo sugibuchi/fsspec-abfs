@@ -31,6 +31,16 @@ if TYPE_CHECKING:
 _PAGE = 5000
 """The most blobs ListBlobs returns in a page."""
 
+
+def bare_etag(etag: str | None) -> str | None:
+    """An ETag without its quotes, as every entry gives it.
+
+    Azure's headers quote an ETag, e.g. ``"0x8DF4..."``, and its listings do
+    not: the SDK's properties carry either. One form lets two entries compare.
+    """
+    return etag.strip('"') if etag else etag
+
+
 _NEXT_MARKER = re.compile(rb"<NextMarker>([^<]*)</NextMarker>")
 
 
@@ -123,7 +133,7 @@ def entries(container: str, body: bytes, prefix: str) -> list[dict[str, Any]]:
         common = {
             "name": f"/{container}/{name.rstrip('/')}",
             "last_modified": parsedate_to_datetime(modified) if modified else None,
-            "etag": get("Etag"),
+            "etag": bare_etag(get("Etag")),
         }
         metadata = blob.find("Metadata")
         folder = (

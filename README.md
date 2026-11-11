@@ -93,6 +93,14 @@ fs.copy(
 )
 ```
 
+To use it for every `abfs://` and `abfss://` URL in fsspec and the libraries using it, call `use()` once:
+
+```python
+import fsspec_abfs
+
+fsspec_abfs.use(cross_account=True)
+```
+
 ---
 
 ## Compatibility

@@ -192,6 +192,20 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         """A path's URL: the path itself, a Hadoop URL."""
         return self._strip_protocol(name)
 
+    @classmethod
+    def _parent(cls, path: str) -> str:
+        """A URL's parent, in its container: a container's root is its own parent.
+
+        fsspec's own takes the text before the last "/", which is no URL for a
+        container's root.
+        """
+        account, domain, container, key = parse_hadoop_url(path)
+        return hadoop_url(container, key.rpartition("/")[0], account, domain)
+
+    async def _sign(self, path: str, expiration: int = 100, **kwargs: Any) -> str:
+        """A blob's URL that reads it with no other credential, by its account's `AbfsFileSystem._sign`."""
+        return await self._forward(path, "_sign", expiration=expiration, **kwargs)
+
     def _route(self, path: str) -> tuple[AsyncFileSystem, str]:
         account, domain, container, key = parse_hadoop_url(path)
         return self.filesystem(account, domain), f"/{container}/{key}".rstrip("/")
@@ -228,9 +242,14 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
             for name in ("operation_concurrency", "io_concurrency"):
                 if options.get(name) is None and getattr(self, name) is not None:
                     options[name] = getattr(self, name)
-            # On the router's loop, uncached: the router keeps and closes it.
+            # In the router's mode, on its loop, uncached: the router keeps and
+            # closes it. A sync router's calls, e.g. open, call the account's
+            # sync methods, which run on that loop.
             return AbfsFileSystem(
-                **options, asynchronous=True, loop=self.loop, skip_instance_cache=True
+                **options,
+                asynchronous=self.asynchronous,
+                loop=self.loop,
+                skip_instance_cache=True,
             )
 
         return self._backend(account, make)  # type: ignore[return-value]
@@ -268,5 +287,9 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         if self.cross_account_copy == "streaming":
             await super()._cross_fs_cp_entry(src_fs, src_entry, dest_fs, dest_path)
         else:
-            url = await src_fs._readable_url(src_entry["name"])  # type: ignore[attr-defined]
+            # The SAS outlives the copy: a user delegation key kept has 12
+            # hours left at least, and the copy runs no longer, it is assumed.
+            source: AbfsFileSystem = src_fs  # type: ignore[assignment]
+            expiration = source._user_delegation_key_margin.total_seconds()
+            url = await source._sign(src_entry["name"], expiration=int(expiration))
             await dest_fs._copy_from_url(url, src_entry["name"], dest_path)  # type: ignore[attr-defined]

@@ -11,6 +11,36 @@ except ImportError:  # A source tree never built: no version file.
     __version__ = "0.0.0"
 
 
+def use(cross_account: bool = False) -> None:
+    """Register a file system of this package with fsspec, for the "abfs" and "abfss" protocols.
+
+    Installing the package registers `AbfsFileSystem` already, by its entry
+    points: this chooses again, e.g. after another library registered its own.
+
+    Parameters
+    ----------
+    cross_account : bool, default False
+        False registers `AbfsFileSystem`, of one account, whose URLs may also
+        be paths in a container. True registers `AbfsFileSystems`, of any
+        account, by Hadoop's URLs only, which copies between two accounts too.
+
+    Examples
+    --------
+    >>> import fsspec
+    >>> import fsspec_abfs
+    >>> fsspec_abfs.use(cross_account=True)
+    >>> fs, path = fsspec.url_to_fs("abfss://raw@myaccount.dfs.core.windows.net/data")
+    """
+    from fsspec import register_implementation  # noqa: PLC0415
+
+    if cross_account:
+        from .routing import AbfsFileSystems as cls  # noqa: PLC0415
+    else:
+        from .abfs import AbfsFileSystem as cls  # noqa: PLC0415
+    for protocol in ("abfs", "abfss"):
+        register_implementation(protocol, cls, clobber=True)
+
+
 def __getattr__(name: str) -> object:
     # Imported on first use, as the Azure SDK is slow to import.
     if name == "AbfsFileSystem":
@@ -24,4 +54,4 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["AbfsFileSystem", "AbfsFileSystems", "__version__"]
+__all__ = ["AbfsFileSystem", "AbfsFileSystems", "__version__", "use"]

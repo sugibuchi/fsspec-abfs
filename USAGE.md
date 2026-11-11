@@ -23,6 +23,19 @@ fs = fsspec.filesystem("abfss", account_name="myaccount")
 A file system works on one account. fsspec caches one per account, credential and options, however the account is
 given.
 
+Installing the package registers `AbfsFileSystem` for `abfs` and `abfss`, in place of adlfs. `use()` registers it
+again, e.g. after another library registered its own. `use(cross_account=True)` registers
+[`AbfsFileSystems`](#many-accounts-abfsfilesystems) instead, for URLs of any account:
+
+```python
+import fsspec
+import fsspec_abfs
+
+fsspec_abfs.use(cross_account=True)
+
+fs, path = fsspec.url_to_fs("abfss://raw@myaccount.dfs.core.windows.net/data")  # AbfsFileSystems
+```
+
 ---
 
 ## Options
@@ -180,6 +193,27 @@ files = fs.glob("/mycontainer/data/*.parquet")
 
 Errors are standard exceptions: `FileNotFoundError`, `FileExistsError`, `IsADirectoryError`, `NotADirectoryError`,
 `PermissionError`, or `OSError`.
+
+### Signed URLs
+
+`sign` gives a file's URL that reads it with no other credential, e.g. for a browser or another service:
+
+```python
+url = fs.sign("/mycontainer/data/file.csv", expiration=3600)  # seconds
+# 'https://myaccount.blob.core.windows.net/mycontainer/data/file.csv?skoid=...&sp=r&sig=...'
+```
+
+The URL carries a SAS reading that file only. How it is signed depends on the credential:
+
+| Credential       | The URL carries                                                          |
+|------------------|--------------------------------------------------------------------------|
+| Token credential | A user delegation SAS, for `expiration` seconds or until its key expires |
+| Shared key       | A SAS signed by the key, for `expiration` seconds                        |
+| SAS              | The credential's own SAS, valid as long as it is                         |
+| Anonymous        | Nothing: the file must be public                                         |
+
+A user delegation key is asked for once, valid for a day, and kept. It needs a role at the account's level: see
+[Assign permissions with Azure RBAC](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac).
 
 ### Containers
 
@@ -343,9 +377,20 @@ With `"server-side"`, the source's URL carries what lets the destination's accou
 - anonymous, nothing: the source must be public.
 
 A user delegation SAS needs a key that the identity asks the source account for. That needs a role at the source
-account's level, e.g. Storage Blob Data Reader, Contributor or Delegator: a role on a container only is refused. The
-key is kept for a day, and asked for again with less than 12 hours left. Each SAS is valid until its key expires, so
+account's level, e.g. Storage Blob Data Reader, Contributor or Delegator: a role on a container only is refused. See
+[Assign permissions with Azure RBAC](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac).
+The key is kept for a day, and asked for again with less than 12 hours left. Each SAS is valid until its key expires, so
 that a long copy keeps reading its source.
+
+With `"server-side"`, check two things before a copy, as a copy that cannot read its source fails:
+
+1. With a Microsoft Entra ID token credential, the identity needs a role giving the action
+   `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey` at the source account's level. See
+   [Assign permissions with Azure RBAC](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac).
+2. The destination account reads the source over the network itself. The source account must be reachable from it,
+   through the network routing settings, the network security groups and the source account's firewall.
+
+No copy falls back on streaming: a source the destination cannot read fails its copy.
 
 A move between two accounts copies each file, then deletes it. A source whose copy failed is kept.
 

@@ -10,6 +10,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 from azure.core.credentials import AccessToken
@@ -319,29 +320,111 @@ def _delegation_key(expiry: datetime) -> UserDelegationKey:
     return key
 
 
-async def test_readable_url(make_router) -> None:
+def _expiry(url: str) -> datetime:
+    """The expiry a signed URL's SAS names, its ``se``."""
+    query = dict(part.split("=", 1) for part in url.partition("?")[2].split("&"))
+    return datetime.fromisoformat(unquote(query["se"]))
+
+
+async def test_sign(make_router) -> None:
     fs = make_router({"a": _SAS, "b": _KEY})
-    # The source's own SAS, in its client's URL.
-    assert (await fs.filesystem("a")._readable_url("/c/x.txt")).endswith(
-        f"/c/x.txt?{_SAS}"
+    # The account's own SAS, in its client's URL.
+    assert (await fs._sign(url("a", "c/x.txt"))).endswith(f"/c/x.txt?{_SAS}")
+
+    # A SAS signed with the account key, reading the blob for the seconds asked.
+    signed = await fs._sign(url("b", "c/x.txt"), expiration=3600)
+    assert "sp=r&" in signed
+    assert "sig=" in signed
+    later = datetime.now(UTC) + timedelta(hours=1)
+    assert abs(_expiry(signed) - later) < timedelta(seconds=5)
+
+
+async def test_sign_with_a_user_delegation_key() -> None:
+    fs = _keyed()
+    # By the key kept: no request.
+    fs._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(days=1))
+    signed = await fs._sign("/c/x.txt", expiration=600)
+    assert "skoid=" in signed
+    assert "sp=r&" in signed
+    assert fs.asked == []
+    # A SAS expires with its key at the latest.
+    signed = await fs._sign("/c/x.txt", expiration=7 * 24 * 3600)
+    assert abs(_expiry(signed) - (datetime.now(UTC) + timedelta(days=1))) < timedelta(
+        seconds=5
     )
-    # A SAS signed with the account key.
-    query = (await fs.filesystem("b")._readable_url("/c/x.txt")).partition("?")[2]
-    assert "sig=" in query
-    assert "sp=r" in query
-
-    token = _keyed()
-    # A user delegation SAS, by the key kept: no request.
-    token._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(days=1))
-    query = (await token._readable_url("/c/x.txt")).partition("?")[2]
-    assert "skoid=" in query
-    assert "sp=r" in query
-    assert token.asked == []
 
 
-async def test_anonymous_readable_url(make_router) -> None:
+async def test_sign_anonymous(make_router) -> None:
     fs = make_router()
-    assert "?" not in await fs.filesystem("a")._readable_url("/c/x.txt")
+    assert "?" not in await fs._sign(url("a", "c/x.txt"))
+
+
+async def test_sign_a_container_is_refused(make_router) -> None:
+    fs = make_router()
+    with pytest.raises(IsADirectoryError):
+        await fs._sign(url("a", "c"))
+
+
+def test_parent() -> None:
+    assert AbfsFileSystems._parent(url("a", "c/d/x.txt")) == url("a", "c/d")
+    assert AbfsFileSystems._parent(url("a", "c/x.txt")) == url("a", "c")
+    # A container's root is its own parent: nothing is above it.
+    assert AbfsFileSystems._parent(url("a", "c")) == url("a", "c")
+
+
+async def test_etags_are_bare(make_router) -> None:
+    fs = make_router()
+    await fs._pipe_file(url("a", "c/d/x.txt"), b"x")
+    listed = (await fs._ls(url("a", "c/d")))[0]["etag"]
+    found = (await fs._find(url("a", "c"), detail=True))[url("a", "c/d/x.txt")]["etag"]
+    info = (await fs._info(url("a", "c/d/x.txt")))["etag"]
+    assert listed == found == info
+    assert not info.startswith('"')
+    # A file opened reads by its bare ETag, quoted for If-Match.
+    async with await fs.open_async(url("a", "c/d/x.txt")) as f:
+        assert await f.read() == b"x"
+
+
+def test_sync_router(dummy, dummy_endpoints, hns) -> None:
+    # A sync router's calls run the accounts' sync methods, e.g. open: on its loop.
+    dummy.create_container("c2")
+    fs = AbfsFileSystems(
+        credential=_Token(),
+        accounts=[
+            {"account_name": "a", "credential": "anonymous", "is_hns_enabled": hns},
+            {"account_name": "b", "credential": _SAS, "is_hns_enabled": hns},
+        ],
+        cross_account_copy="server-side",
+        skip_instance_cache=True,
+    )
+    for name in ("a", "b"):
+        inner = fs.filesystem(name)
+        inner._dfs_url, inner._blob_url = dummy_endpoints
+    try:
+        with fs.open(url("a", "c/x.txt"), "wb") as f:
+            f.write(b"x")
+        with fs.open(url("a", "c/x.txt"), "rb") as f:
+            assert f.read() == b"x"
+        fs.copy(url("a", "c/x.txt"), url("b", "c2/x.txt"))
+        assert fs.cat_file(url("b", "c2/x.txt")) == b"x"
+        assert fs.sign(url("b", "c2/x.txt")).endswith(f"?{_SAS}")
+    finally:
+        fs.close()
+
+
+@pytest.mark.parametrize("cross_account", [False, True])
+def test_use(cross_account: bool) -> None:
+    import fsspec  # noqa: PLC0415
+
+    import fsspec_abfs  # noqa: PLC0415
+
+    try:
+        fsspec_abfs.use(cross_account=cross_account)
+        expected = AbfsFileSystems if cross_account else AbfsFileSystem
+        for protocol in ("abfs", "abfss"):
+            assert fsspec.get_filesystem_class(protocol) is expected
+    finally:
+        fsspec_abfs.use()  # As the entry points register it.
 
 
 # The user delegation key.
