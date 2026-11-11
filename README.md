@@ -1,6 +1,9 @@
 # fsspec-abfs
 
+[![PyPI - Version](https://img.shields.io/pypi/v/fsspec-abfs?color=blue)](https://pypi.org/project/fsspec-abfs/)
+[![Python versions](https://img.shields.io/pypi/pyversions/fsspec-abfs)](https://pypi.org/project/fsspec-abfs/)
 [![License](https://img.shields.io/github/license/sugibuchi/fsspec-abfs)](https://github.com/sugibuchi/fsspec-abfs/blob/main/LICENSE)
+[![CI](https://github.com/sugibuchi/fsspec-abfs/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/sugibuchi/fsspec-abfs/actions/workflows/ci.yaml)
 
 An [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) file system for
 [Azure Data Lake Storage Gen2](https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-introduction).
