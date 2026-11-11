@@ -212,14 +212,12 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
                 f" {cross_account_copy!r}"
             )
 
-        self._credential_given = credential
         # Checked first, as a SAS or a key would make a credential of another kind.
-        self._credential_options = token_credential_options(credential, storage_options)
-        self.credential = StorageCredential.from_credential(
-            credential, **self._credential_options
-        )
+        options = token_credential_options(credential, storage_options)
+        self.credential = StorageCredential.from_credential(credential, **options)
         # One made from a string is the router's to close, with its accounts.
         self._owns_credential = self.credential.value is not credential
+        self._closed = False
         self.operation_concurrency = operation_concurrency
         self.io_concurrency = io_concurrency
         self.cross_account_copy: CrossAccountCopy = cross_account_copy
@@ -282,7 +280,10 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
 
         Its arguments are those of ``accounts`` for the account. The
         default credential and concurrency fill in those it lacks.
+        A closed router makes none: it raises RuntimeError.
         """
+        if self._closed:
+            raise RuntimeError("The file system is already closed")
         account = check_account(account_name, account_domain)
 
         def make() -> AbfsFileSystem:
@@ -307,22 +308,21 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         """Close the accounts' file systems, then the credential the router made.
 
         The credential is closed on the loop where the accounts' clients ran,
-        which its sessions are bound to: unused, it holds nothing. A new one is
-        made for the calls after, as the accounts' file systems are.
+        which its sessions are bound to: unused, it holds nothing. A closed
+        router refuses further calls, as `AbfsFileSystem` does.
         """
         loops = [
             fs._client_loop  # type: ignore[attr-defined]
             for fs in self._backends.values()
             if getattr(fs, "_client_loop", None) is not None
         ]
+        self._closed = True
         try:
             super().close()
         finally:
             if self._owns_credential and loops:
                 close_on_loop(loops[0], [self.credential.value])
-                self.credential = StorageCredential.from_credential(
-                    self._credential_given, **self._credential_options
-                )
+                self._owns_credential = False
 
     # Copies between two accounts.
 
