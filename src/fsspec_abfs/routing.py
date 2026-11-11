@@ -265,11 +265,6 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         """A path's URL: the path itself, a Hadoop URL."""
         return self._strip_protocol(name)
 
-    @staticmethod
-    def _get_kwargs_from_urls(path: str) -> dict[str, Any]:
-        # The URL names the account, which the router finds itself.
-        return {}
-
     def _route(self, path: str) -> tuple[AsyncFileSystem, str]:
         account, domain, container, key = _parse(path)
         return self.filesystem(account, domain), f"/{container}/{key}".rstrip("/")
