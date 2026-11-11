@@ -127,16 +127,31 @@ def test_strip_protocol(path: str, stripped: str) -> None:
     assert AbfsFileSystem._strip_protocol(path) == stripped
 
 
+@pytest.mark.parametrize(
+    ("path", "split"),
+    [
+        ("abfss://c@acc.dfs.core.windows.net/a/b", ("c", "a/b")),
+        ("abfs://c/a", ("c", "a")),
+        ("/c/a/", ("c", "a")),
+        ("c", ("c", "")),
+        ("/", ("", "")),
+    ],
+)
+def test_split_path(path: str, split: tuple[str, str]) -> None:
+    fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
+    assert fs.split_path(path) == split
+
+
 def test_paths_of_another_account_are_refused() -> None:
     fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
-    assert fs._strip_protocol("abfss://c@acc.dfs.core.windows.net/a") == "/c/a"
-    assert fs._strip_protocol(["abfs://c/a", "/c/b"]) == ["/c/a", "/c/b"]
     for url in (
         "abfss://c@other.dfs.core.windows.net/a",
         "abfss://c@acc.dfs.fabric.microsoft.com/a",
     ):
+        # Stripping is fsspec's convention, and knows no account.
+        assert fs._strip_protocol(url) == "/c/a"
         with pytest.raises(ValueError, match="not of this filesystem's"):
-            fs._strip_protocol(url)
+            fs.split_path(url)
         with pytest.raises(ValueError, match="not of this filesystem's"):
             fs.info(url)
 

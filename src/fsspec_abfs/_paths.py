@@ -1,7 +1,7 @@
 """The accounts and paths of Azure Data Lake Storage Gen2.
 
 A path of the filesystem is ``/<container>/<path in container>``. The root,
-"/", holds the containers. `split_path` gives a path's container and its path
+"/", holds the containers. `split_stripped` gives a stripped path's container and its path
 within it, without a leading "/": the blob API takes names so, and the Data Lake
 API answers differently to some requests when a leading "/" is given.
 
@@ -22,7 +22,7 @@ __all__ = [
     "account_of",
     "check_account",
     "parse_account_url",
-    "split_path",
+    "split_stripped",
     "strip_protocol",
 ]
 
@@ -97,8 +97,8 @@ def account_of(url: str) -> tuple[str, AccountDomain] | None:
 def strip_protocol(path: str) -> str:
     """A path as the filesystem takes it: ``/<container>/<path>``, without protocol or account.
 
-    The account of a Hadoop-style URL is left out here: the filesystem checks
-    it is its own, see `AbfsFileSystem._strip_protocol`.
+    The account of a Hadoop-style URL is left out here: the filesystem's
+    operations check it is its own, see `AbfsFileSystem.split_path`.
     """
     path = path.strip()
     m = _URL.fullmatch(path)
@@ -107,7 +107,7 @@ def strip_protocol(path: str) -> str:
     return "/" + path.strip("/")
 
 
-def split_path(path: str) -> tuple[str, str]:
+def split_stripped(path: str) -> tuple[str, str]:
     """A stripped path's container and the path within it, each "" if none."""
     container, _, key = path.strip("/").partition("/")
     return container, key.strip("/")

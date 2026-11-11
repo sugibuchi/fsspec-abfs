@@ -59,7 +59,7 @@ from ._paths import (
     account_of,
     check_account,
     parse_account_url,
-    split_path,
+    split_stripped,
     strip_protocol,
 )
 from ._ranges import plan
@@ -207,32 +207,6 @@ class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
         return super().__call__(**kwargs)
 
 
-class _StripProtocol:
-    """`AbfsFileSystem._strip_protocol`: a classmethod, which on an instance checks a URL's account too.
-
-    fsspec strips paths both on the class, before a filesystem exists, and on
-    an instance. Only an instance knows its account, so only there is a URL of
-    another account refused.
-    """
-
-    def __get__(self, instance: Any, owner: type) -> Any:
-        def strip(path: Any) -> Any:
-            if isinstance(path, list):
-                return [strip(p) for p in path]
-            path = str(path)
-            if instance is not None:
-                account = account_of(path)
-                own = (instance.account_name, instance.account_domain)
-                if account is not None and account != own:
-                    raise ValueError(
-                        f"{path!r} is of the account {account[0]}.{account[1]}, not of "
-                        f"this filesystem's, {own[0]}.{own[1]}"
-                    )
-            return strip_protocol(path)
-
-        return strip
-
-
 class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     """An async fsspec filesystem of an Azure storage account, e.g. ADLS Gen2.
 
@@ -240,8 +214,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     containers. It makes no container: a container is made by Azure's own
     means. It takes ``abfs://`` and ``abfss://`` URLs, in adlfs' form,
     ``abfs://<container>/<path>``, or Hadoop's,
-    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``, which must
-    name its own account. ``az://`` URLs are taken too.
+    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``. ``az://``
+    URLs are taken too. Its operations refuse a URL of another account: see
+    `split_path`.
 
     The recursive methods are the tree strategies of fsspec-alt-strategies.
     Their storage profile follows the account: see `HNS_PROFILE`,
@@ -361,7 +336,29 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
     # Paths.
 
-    _strip_protocol = _StripProtocol()
+    @classmethod
+    def _strip_protocol(cls, path: Any) -> Any:
+        if isinstance(path, list):
+            return [cls._strip_protocol(p) for p in path]
+        else:
+            return strip_protocol(str(path))
+
+    def split_path(self, path: str) -> tuple[str, str]:
+        """A path's container and its path within the container, each "" if none.
+
+        ``path`` is a path or a URL, stripped here. A Hadoop-style URL must name
+        the filesystem's own account: one of another account raises ValueError,
+        as the filesystem would otherwise act on a path of its own by that name.
+        """
+        account = account_of(path)
+        own = (self.account_name, self.account_domain)
+        if account is not None and account != own:
+            raise ValueError(
+                f"{path!r} is of the account {account[0]}.{account[1]}, not of this "
+                f"filesystem's, {own[0]}.{own[1]}"
+            )
+        else:
+            return split_stripped(strip_protocol(path))
 
     @staticmethod
     def _get_kwargs_from_urls(path: str) -> dict[str, Any]:
@@ -533,8 +530,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
         Called only with a hierarchical namespace, as `HNS_PROFILE` declares.
         """
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Not deleting a container", path)
         # A path's deletion: of a folder, recursive, or of a file.
@@ -545,8 +542,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     # Describing and listing.
 
     async def _info(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not container:
             return dict(_root_info)
 
@@ -584,8 +581,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     async def _ils(
         self, path: str, recursive: bool = False, **kwargs: Any
     ) -> AsyncIterator[dict[str, Any]]:
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not container:
             listing = self._ils_containers(recursive)
         elif (await self._account_profile(container)).implicit_directories is False:
@@ -690,8 +687,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     # Changing paths.
 
     async def _rm_file(self, path: str, **kwargs: Any) -> None:
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Is a container", path)
         with azure_errors(path):
@@ -708,8 +705,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         return False
 
     async def _rmdir(self, path: str) -> None:
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not container:
             raise PermissionError(errno.EACCES, "Not deleting the root", path)
 
@@ -744,8 +741,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         FileNotFoundError, and a container missing itself PermissionError.
         Containers are made by Azure's own means, with their settings.
         """
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not container:
             if exist_ok:
                 return
@@ -790,9 +787,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         Works with or without a hierarchical namespace. The source's URL is
         its client's, carrying a SAS token when the credential is one.
         """
+        (c1, k1), (c2, k2) = self.split_path(path1), self.split_path(path2)
         path1, path2 = self._strip_protocol(path1), self._strip_protocol(path2)
-        c1, k1 = split_path(path1)
-        c2, k2 = split_path(path2)
         if not k1 or not k2:
             raise IsADirectoryError(errno.EISDIR, "Is a container", path1)
 
@@ -850,9 +846,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
     async def _move(self, path1: str, path2: str, entry: dict[str, Any] | None) -> None:
         """Move a path, by a rename or a copy and a deletion, with its entry if known."""
+        (c1, k1), (c2, k2) = self.split_path(path1), self.split_path(path2)
         path1, path2 = self._strip_protocol(path1), self._strip_protocol(path2)
-        c1, k1 = split_path(path1)
-        c2, k2 = split_path(path2)
         profile = await self._account_profile(c1)
         if not profile.renames_files or c1 != c2 or not k1 or not k2:
             # Copying a folder would copy its own blob, then fail deleting it.
@@ -889,8 +884,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         hierarchical namespace, or no blob without one: it raises IsADirectoryError or FileNotFoundError, as
         `_open_file` does.
         """
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
         info: dict[str, Any] = {}
@@ -931,8 +926,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         """Open an adaptive file on the running loop."""
         if mode not in ("rb", "wb", "xb"):
             raise UnsupportedOperation(f"Unsupported mode {mode!r}: rb, wb or xb")
+        container, key = self.split_path(path)
         path = self._strip_protocol(path)
-        container, key = split_path(path)
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
 
