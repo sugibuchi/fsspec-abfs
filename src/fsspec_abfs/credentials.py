@@ -61,7 +61,8 @@ class StorageCredential:
         # Never the value of a SAS token or a key.
         if self.kind in ("SAS", "SharedKey"):
             return f"StorageCredential(kind={self.kind!r}, value=***)"
-        return f"StorageCredential(kind={self.kind!r}, value={self.value!r})"
+        else:
+            return f"StorageCredential(kind={self.kind!r}, value={self.value!r})"
 
     @classmethod
     def from_credential(cls, credential: Any, **options: Any) -> StorageCredential:

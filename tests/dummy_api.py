@@ -306,18 +306,18 @@ def _blob_operation(  # noqa: C901 - one branch per REST operation, as Azure's r
 def _dfs_operation(method: str, container: str, key: str, q: Any, h: Any) -> str:
     if not container:
         return ""
-    if method == "GET" and not key and q.get("resource") == "filesystem":
+    elif method == "GET" and not key and q.get("resource") == "filesystem":
         return "ListPaths"
-    if method == "HEAD" and q.get("action") == "getAccessControl":
+    elif method == "HEAD" and q.get("action") == "getAccessControl":
         return "GetAccessControl"
-    if key and method == "PUT":
-        if "x-ms-rename-source" in h:
-            return "RenamePath"
-        if q.get("resource") in ("directory", "file"):
-            return "CreatePath"
-    if key and method == "DELETE":
+    elif key and method == "PUT" and "x-ms-rename-source" in h:
+        return "RenamePath"
+    elif key and method == "PUT" and q.get("resource") in ("directory", "file"):
+        return "CreatePath"
+    elif key and method == "DELETE":
         return "DeletePath"
-    return ""
+    else:
+        return ""
 
 
 @app.api_route("/{service}", methods=_METHODS)

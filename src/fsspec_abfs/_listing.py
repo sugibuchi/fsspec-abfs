@@ -100,7 +100,8 @@ def next_marker(body: bytes) -> str | None:
     found = _NEXT_MARKER.search(tail) or _NEXT_MARKER.search(body)
     if found is None or not found.group(1):
         return None
-    return unescape(found.group(1).decode())
+    else:
+        return unescape(found.group(1).decode())
 
 
 def entries(container: str, body: bytes, prefix: str) -> list[dict[str, Any]]:

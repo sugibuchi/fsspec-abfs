@@ -70,30 +70,31 @@ def os_error(error: AzureError, path: str) -> OSError:
     status = getattr(error, "status_code", None)
     if code in _NOT_EMPTY:
         return _error(errno.ENOTEMPTY, path, error)
-    if code in _IS_A_DIRECTORY:
+    elif code in _IS_A_DIRECTORY:
         return _error(errno.EISDIR, path, error)
-    if code in _NOT_A_DIRECTORY:
+    elif code in _NOT_A_DIRECTORY:
         return _error(errno.ENOTDIR, path, error)
-    if code in _EXISTS:
+    elif code in _EXISTS:
         return _error(errno.EEXIST, path, error)
-    if code in _STALE or isinstance(error, ResourceModifiedError):
+    elif code in _STALE or isinstance(error, ResourceModifiedError):
         # Read by If-Match, so the file changed while read.
         return _error(errno.ESTALE, path, error)
-    if isinstance(error, ResourceNotFoundError) or status == 404:
+    elif isinstance(error, ResourceNotFoundError) or status == 404:
         return _error(errno.ENOENT, path, error)
-    if (
+    elif (
         code in _DENIED
         or isinstance(error, ClientAuthenticationError)
         or status in (401, 403)
     ):
         return _error(errno.EACCES, path, error)
-    if isinstance(error, ResourceExistsError):
+    elif isinstance(error, ResourceExistsError):
         # A 409 of no code known here: a conflict, e.g. a lease, rather than a
         # path existing.
         return _error(errno.EEXIST if code is None else errno.EIO, path, error)
-    if isinstance(error, HttpResponseError) and status == 400:
+    elif isinstance(error, HttpResponseError) and status == 400:
         return _error(errno.EINVAL, path, error)
-    return _error(errno.EIO, path, error)
+    else:
+        return _error(errno.EIO, path, error)
 
 
 @contextmanager

@@ -158,14 +158,15 @@ def _blob_entry(container: str, props: Any) -> dict[str, Any]:
             "last_modified": props.last_modified,
             "etag": props.etag,
         }
-    return {
-        "name": name,
-        "size": props.size,
-        "type": "file",
-        "last_modified": props.last_modified,
-        "etag": props.etag,
-        "content_type": getattr(props.content_settings, "content_type", None),
-    }
+    else:
+        return {
+            "name": name,
+            "size": props.size,
+            "type": "file",
+            "last_modified": props.last_modified,
+            "etag": props.etag,
+            "content_type": getattr(props.content_settings, "content_type", None),
+        }
 
 
 def _folder_entry(name: str) -> dict[str, Any]:
@@ -378,7 +379,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         account = account_of(path)
         if account is None:
             return {}
-        return {"account_name": account[0], "account_domain": account[1]}
+        else:
+            return {"account_name": account[0], "account_domain": account[1]}
 
     # The clients.
 
@@ -957,13 +959,14 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 version=info.get("etag"),
                 concurrency_limit=self.io_limit,
             )
-        return AbfsWritableFile(
-            path,
-            loop,
-            blob=blob,
-            mode=mode,
-            concurrency_limit=self.io_limit,
-        )
+        else:
+            return AbfsWritableFile(
+                path,
+                loop,
+                blob=blob,
+                mode=mode,
+                concurrency_limit=self.io_limit,
+            )
 
     async def open_async(self, path: str, mode: str = "rb", **kwargs: Any) -> Any:
         if kwargs.get("compression"):
@@ -982,9 +985,10 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         f = sync(self.loop, self._open_file, path, mode)
         if autocommit or mode == "rb":
             return f
-        # In a transaction, the block list is committed on commit: no other
-        # client sees the file before.
-        return TransactionFile(AdaptiveWritableTransaction(f))
+        else:
+            # In a transaction, the block list is committed on commit: no other
+            # client sees the file before.
+            return TransactionFile(AdaptiveWritableTransaction(f))
 
 
 class AbfsReadableFile(AdaptiveReadableFile):
@@ -1056,9 +1060,10 @@ class AbfsWritableFile(AdaptiveWritableFile):
         """Commit only if no blob exists, for mode "xb"."""
         if not self.exclusive:
             return {}
-        # The SDK sends If-None-Match: * itself. An etag given too would not be
-        # taken, but passed on to the HTTP session, which refuses it.
-        return {"match_condition": MatchConditions.IfMissing}
+        else:
+            # The SDK sends If-None-Match: * itself. An etag given too would not
+            # be taken, but passed on to the HTTP session, which refuses it.
+            return {"match_condition": MatchConditions.IfMissing}
 
     def _exists_error(self, e: AzureError) -> OSError:
         return FileExistsError(errno.EEXIST, f"File exists ({describe(e)})", self.path)

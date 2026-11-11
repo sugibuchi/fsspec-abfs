@@ -33,9 +33,12 @@ class Range:
         """The HTTP Range header's value, or None for the whole file."""
         if self.whole:
             return None
-        if self.start < 0:
+        elif self.start < 0:
             return f"bytes={self.start}"
-        return f"bytes={self.start}-" + ("" if self.end is None else str(self.end - 1))
+        else:
+            return f"bytes={self.start}-" + (
+                "" if self.end is None else str(self.end - 1)
+            )
 
 
 async def plan(
@@ -56,4 +59,5 @@ async def plan(
         end = None if end is None else max(0, end + n) if end < 0 else end
     if end is not None and end <= max(start, 0):
         return Range(empty=True)
-    return Range(start, end)
+    else:
+        return Range(start, end)

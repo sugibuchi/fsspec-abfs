@@ -90,7 +90,8 @@ def account_of(url: str) -> tuple[str, AccountDomain] | None:
     m = _URL.fullmatch(url.strip())
     if m is None or m.group("account") is None:
         return None
-    return m.group("account").lower(), m.group("domain").lower()  # type: ignore[return-value]
+    else:
+        return m.group("account").lower(), m.group("domain").lower()  # type: ignore[return-value]
 
 
 def strip_protocol(path: str) -> str:
