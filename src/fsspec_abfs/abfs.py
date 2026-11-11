@@ -63,7 +63,6 @@ from ._paths import (
     split_stripped,
     strip_protocol,
 )
-from ._ranges import plan
 from .credentials import StorageCredential
 
 if TYPE_CHECKING:
@@ -893,17 +892,19 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
         info: dict[str, Any] = {}
-
-        async def size() -> int:
+        start = start or 0
+        if start < 0 or (end is not None and end < 0):
             info.update(await self._info(path))
-            return int(info["size"])
-
-        wanted = await plan(start, end, size, suffix=False)
-        if wanted.empty:
+            size = int(info["size"])
+            if start < 0:
+                start = max(0, start + size)
+            if end is not None and end < 0:
+                end = max(0, end + size)
+        if end is not None and end <= start:
             if (info or await self._info(path))["type"] == "directory":
                 raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
             return b""
-        length = None if wanted.end is None else wanted.end - wanted.start
+        length = None if end is None else end - start
         # A read of data, as the files' are: under io_limit, or fsspec's cat of many paths sends them all at once.
         with azure_errors(path):
             async with self.io_limit:
@@ -912,7 +913,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                     # time by default: a whole 132 MiB file took 27 rounds. They go at
                     # once, as many as the readers' spread, under this one permit.
                     downloader = await self._blob(container, key).download_blob(
-                        offset=None if wanted.whole else wanted.start,
+                        offset=None if start == 0 and end is None else start,
                         length=length,
                         max_concurrency=AbfsReadableFile.spread,
                     )
