@@ -3,9 +3,11 @@ name = "fsspec-abfs"
 dynamic = ["version"]
 description = "An fsspec file system for Azure Data Lake Storage Gen2, on fsspec-alt-strategies"
 readme = "README.md"
-license = "BSD-3-Clause"
-license-files = ["LICENSE", "AUTHORS"]
-authors = [{ name = "Tsuyoshi SUGIBUCHI" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Tsuyoshi SUGIBUCHI", email = "sugibuchi@gmail.com" }
+]
 keywords = ["fsspec", "filesystem", "azure", "adls", "data lake", "async"]
 classifiers = [
     "Development Status :: 3 - Alpha",

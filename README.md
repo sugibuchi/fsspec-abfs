@@ -7,4 +7,4 @@ An [fsspec](https://github.com/fsspec/filesystem_spec) file system for Azure Dat
 
 ## License
 
-BSD 3-Clause License. See [LICENSE](https://github.com/sugibuchi/fsspec-abfs/blob/main/LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/sugibuchi/fsspec-abfs/blob/main/LICENSE).
