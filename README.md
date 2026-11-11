@@ -88,9 +88,11 @@ operation's behaviour.
 
 ---
 
-## Development and license
+## Development, security and license
 
 * [DEVELOPMENT.md](https://github.com/sugibuchi/fsspec-abfs/blob/main/DEVELOPMENT.md) explains how to work on the
   package: its setup and tests.
+* [SECURITY.md](https://github.com/sugibuchi/fsspec-abfs/blob/main/SECURITY.md) explains how to report a
+  vulnerability.
 * The package is licensed under the Apache License 2.0. See
   [LICENSE](https://github.com/sugibuchi/fsspec-abfs/blob/main/LICENSE).
