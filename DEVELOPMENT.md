@@ -172,18 +172,19 @@ ruff, zizmor and actionlint, run with `uvx`, are the exception: CI runs their la
 
 ### The `azure` environment
 
-The live tests authenticate as a Microsoft Entra ID app, by workload identity federation: no secret is stored. The
-app needs Storage Blob Data Contributor on the test container of each account.
+The live tests authenticate as a user-assigned managed identity, by workload identity federation: no secret is
+stored. The identity needs Storage Blob Data Contributor on the test container of each account. An Entra ID app works
+the same.
 
 | Variable                            | Value                                                         |
 |-------------------------------------|---------------------------------------------------------------|
-| `AZURE_CLIENT_ID`                   | The app's client ID                                           |
+| `AZURE_CLIENT_ID`                   | The identity's client ID                                      |
 | `AZURE_TENANT_ID`                   | Its tenant's ID                                               |
 | `FSSPEC_ABFS_TEST_HNS_ACCOUNT_URL`  | The endpoint of an account with a hierarchical namespace      |
 | `FSSPEC_ABFS_TEST_FLAT_ACCOUNT_URL` | The endpoint of an account without one                        |
 | `FSSPEC_ABFS_TEST_CONTAINER`        | A container of that name in each account                      |
 
-The kinds of account tested are those whose endpoint is set. The app's federated credential names the issuer
+The kinds of account tested are those whose endpoint is set. The identity's federated credential names the issuer
 `https://token.actions.githubusercontent.com`, the subject `repo:sugibuchi/fsspec-abfs:environment:azure` and the
 audience `api://AzureADTokenExchange`.
 
