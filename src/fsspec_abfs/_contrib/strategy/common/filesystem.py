@@ -261,7 +261,8 @@ class _BaseFileSystem(AsyncFileSystem, Monitored, metaclass=_AbstractFileSystemM
                 if end < 0:
                     end = f.size + end
                 return await f.read(max(0, end - position))
-            return await f.read()
+            else:
+                return await f.read()
 
     async def _pipe_file(
         self, path: str, value: bytes, mode: str = "overwrite", **kwargs: Any
@@ -332,7 +333,8 @@ class _BaseFileSystem(AsyncFileSystem, Monitored, metaclass=_AbstractFileSystemM
             return self.batch_size  # type: ignore[no-any-return]
         if isinstance(self.io_concurrency, int):
             return self.io_concurrency
-        return None
+        else:
+            return None
 
     async def _cat(
         self,
@@ -495,7 +497,8 @@ def _cut(
         return data
     if length is None:
         return bytes(data)
-    return bytes(data[offset : offset + max(0, length)])
+    else:
+        return bytes(data[offset : offset + max(0, length)])
 
 
 def _merge_ranges(
@@ -598,7 +601,8 @@ def _du_answer(size: int, entries: list[dict[str, Any]], total: bool) -> Any:
     """What fsspec's ``_du`` answers: the total size, or each path's."""
     if total:
         return size
-    return {e["name"]: e.get("size") or 0 for e in entries}
+    else:
+        return {e["name"]: e.get("size") or 0 for e in entries}
 
 
 def _copy_errors(errors: list[Exception], on_error: str | None) -> list[Exception]:
@@ -608,7 +612,8 @@ def _copy_errors(errors: list[Exception], on_error: str | None) -> list[Exceptio
     """
     if on_error == "raise":
         return errors
-    return [e for e in errors if not isinstance(e, FileNotFoundError)]
+    else:
+        return [e for e in errors if not isinstance(e, FileNotFoundError)]
 
 
 def _raise(errors: list[Exception], doing: str) -> None:

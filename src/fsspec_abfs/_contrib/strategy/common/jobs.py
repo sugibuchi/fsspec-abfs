@@ -640,7 +640,8 @@ class _CopyJobs(_Jobs):
 
         if self.prefix:
             return self.base + path[len(self.prefix) :]
-        return f"{self.base}/{path}" if self.base else path
+        else:
+            return f"{self.base}/{path}" if self.base else path
 
     async def copy_file(
         self, cp_entry: _Transfer, entry: dict[str, Any], destination: str

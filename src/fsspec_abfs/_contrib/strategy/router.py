@@ -355,8 +355,8 @@ class AsyncRoutingFileSystem(
 
         if plain.endswith("/") and inner and not inner.endswith("/"):
             return fs, f"{inner}/"
-
-        return target
+        else:
+            return target
 
     def _required(self, path: str) -> tuple[AsyncFileSystem, str]:
         """``_target`` of a path that must be in a storage, e.g. of a file."""
@@ -507,8 +507,8 @@ class AsyncRoutingFileSystem(
         if target is not None:
             fs, inner = target
             return self._entry(fs, await self._on(fs, inner, path, fs._info(inner)))
-
-        return await self._root_info(self._strip_protocol(path))
+        else:
+            return await self._root_info(self._strip_protocol(path))
 
     async def _ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
         target = self._target(path)
@@ -1094,7 +1094,8 @@ class AsyncRoutingFileSystem(
                 same_storage=False,
                 maxdepth=maxdepth,
             )
-        return None
+        else:
+            return None
 
     async def _cross_fs_mv(
         self,
@@ -1145,7 +1146,8 @@ class AsyncRoutingFileSystem(
                 same_storage=False,
                 maxdepth=maxdepth,
             )
-        return None
+        else:
+            return None
 
     def _across(
         self, fs1: AsyncFileSystem, fs2: AsyncFileSystem, *, move: bool = False

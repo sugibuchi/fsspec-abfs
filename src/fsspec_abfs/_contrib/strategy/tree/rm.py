@@ -187,7 +187,8 @@ class _Deletion(_TreeJobs):
             return self.fs._rm_tree(job.path)
         if job.kind == "directory":
             return self.fs._rmdir(job.path)
-        return self.fs._rm_file(job.path)
+        else:
+            return self.fs._rm_file(job.path)
 
     def done(self, job: _Job) -> list[Any]:
         if job.kind in ("directory", "tree"):
