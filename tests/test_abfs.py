@@ -482,3 +482,8 @@ async def test_containers(dummy, fs, hns) -> None:
         await fs._rmdir("/newcontainer")
     await fs._rmdir("/c")
     assert "c" not in dummy.containers
+
+
+async def test_no_listings_cache(make_fs) -> None:
+    # Other clients change the storage too: no listing is ever cached.
+    assert make_fs().dircache.use_listings_cache is False

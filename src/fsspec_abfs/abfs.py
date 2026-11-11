@@ -336,6 +336,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         super().__init__(
             operation_concurrency=operation_concurrency or self.operation_concurrency,
             io_concurrency=io_concurrency or self.io_concurrency,
+            # No listing is cached: other clients change the storage too. See
+            # USAGE.md's "No directory cache".
+            use_listings_cache=False,
             **storage_options,
         )
 

@@ -56,6 +56,21 @@ requests with one. Unless `is_hns_enabled` says, the first operation needing to 
 If neither answers, a warning is logged, and the file system takes the way right on both kinds of account. Pass
 `is_hns_enabled` to save the request, or where the credential cannot ask.
 
+### No directory cache
+
+fsspec lets a file system keep the listings it reads, in a directory cache, and leaves invalidating it to the caller.
+This file system caches no listing: every call reaches the storage, and `use_listings_cache` is always `False`.
+
+Many clients now work on the same storage:
+
+- within one Python process, fsspec, PyArrow's own file systems, and the Rust `object_store` that Polars and delta-rs
+  use;
+- across processes, services such as Databricks, Amazon EMR and Microsoft Fabric, run by different users.
+
+Most of these clients keep no directory cache. A cache in fsspec assumes that fsspec alone changes the storage, and
+invalidating it by hand cannot keep it consistent with the others. So this file system takes the safe side: it will not
+implement directory caching.
+
 ---
 
 ## Logging
