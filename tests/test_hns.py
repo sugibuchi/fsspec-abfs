@@ -95,11 +95,66 @@ async def test_unknown_kept(dummy, make_fs, caplog) -> None:
     assert "SECRET" not in caplog.text  # Never Azure's message.
 
 
-async def test_no_container(dummy, make_fs) -> None:
+async def test_no_container_asks_the_first_listed(dummy, make_fs, hns) -> None:
+    # An operation at the root names no container: the first listed is asked.
     dummy.failures["GetAccountInformation"] = _REFUSED
+    fs = make_fs(is_hns_enabled=None)
+    assert await fs._hns("") is hns
+    assert dummy.count("GetAccessControl") == 1
+
+
+async def test_no_container_to_ask(dummy, make_fs) -> None:
+    dummy.failures["GetAccountInformation"] = _REFUSED
+    dummy.failures["ListContainers"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
     assert await fs._hns("") is None
     assert dummy.count("GetAccessControl") == 0
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda fs: fs._find("/c/a"),
+        lambda fs: fs._du("/c/a"),
+        lambda fs: fs._glob("/c/a/*"),
+        lambda fs: fs._rm("/c/a", recursive=True),
+        lambda fs: fs._copy("/c/a", "/c/b", recursive=True),
+        lambda fs: fs._mv("/c/a", "/c/b", recursive=True),
+    ],
+)
+async def test_recursive_methods_probe_their_container(
+    dummy, make_fs, hns, call
+) -> None:
+    # The method names its container before its strategy loads the profile,
+    # with no path: the first operation of a filesystem, it probes that one.
+    await make_fs()._pipe_file("/c/a/x", b"1")
+    dummy.failures["GetAccountInformation"] = _REFUSED
+    dummy.requests.clear()
+    fs = make_fs(is_hns_enabled=None)
+    await call(fs)
+    assert fs.is_hns_enabled is hns
+    assert dummy.count("GetAccessControl") == 1
+    assert dummy.count("ListContainers") == 0
+
+
+async def test_walk_probes_its_container(dummy, make_fs, hns) -> None:
+    await make_fs()._pipe_file("/c/a/x", b"1")
+    dummy.failures["GetAccountInformation"] = _REFUSED
+    dummy.requests.clear()
+    fs = make_fs(is_hns_enabled=None)
+    walked = [root async for root, _, _ in fs._walk("/c")]
+    assert walked == ["/c", "/c/a"]
+    assert fs.is_hns_enabled is hns
+    assert dummy.count("ListContainers") == 0
+
+
+async def test_recursive_methods_refuse_another_account(make_fs) -> None:
+    fs = make_fs()
+    other = "abfss://c@other.dfs.core.windows.net/a"
+    with pytest.raises(ValueError, match="not of this filesystem's"):
+        await fs._find(other)
+    with pytest.raises(ValueError, match="not of this filesystem's"):
+        await fs._copy("/c/a", other, recursive=True)
 
 
 async def test_operations_ask_first(dummy, make_fs, hns) -> None:
