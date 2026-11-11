@@ -44,7 +44,7 @@ def test_account_url_rejected(url: str) -> None:
 
 
 def test_account_by_name_and_domain() -> None:
-    fs = AbfsFileSystem("Acc", skip_instance_cache=True)
+    fs = AbfsFileSystem(account_name="Acc", skip_instance_cache=True)
     assert (fs.account_name, fs.account_domain) == ("acc", "core.windows.net")
     fs = AbfsFileSystem(
         account_name="acc",
@@ -81,8 +81,13 @@ def test_account_given_wrongly(kwargs: dict, match: str) -> None:
         AbfsFileSystem(skip_instance_cache=True, **kwargs)
 
 
+def test_arguments_are_keywords_only() -> None:
+    with pytest.raises(TypeError, match="keyword arguments only"):
+        AbfsFileSystem("acc", skip_instance_cache=True)  # type: ignore[misc]
+
+
 def test_cached_by_account_however_given() -> None:
-    by_name = AbfsFileSystem("cacheacc")
+    by_name = AbfsFileSystem(account_name="cacheacc")
     assert (
         AbfsFileSystem(account_name="cacheacc", account_domain="core.windows.net")
         is by_name
@@ -93,7 +98,9 @@ def test_cached_by_account_however_given() -> None:
     assert (
         AbfsFileSystem(account_url="https://cacheacc.blob.core.windows.net") is by_name
     )
-    other = AbfsFileSystem("cacheacc", account_domain="fabric.microsoft.com")
+    other = AbfsFileSystem(
+        account_name="cacheacc", account_domain="fabric.microsoft.com"
+    )
     assert other is not by_name
     # Made again from its storage options, as when unpickled: the same account.
     assert by_name.storage_options["account_name"] == "cacheacc"
@@ -121,7 +128,7 @@ def test_strip_protocol(path: str, stripped: str) -> None:
 
 
 def test_paths_of_another_account_are_refused() -> None:
-    fs = AbfsFileSystem("acc", skip_instance_cache=True)
+    fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
     assert fs._strip_protocol("abfss://c@acc.dfs.core.windows.net/a") == "/c/a"
     assert fs._strip_protocol(["abfs://c/a", "/c/b"]) == ["/c/a", "/c/b"]
     for url in (

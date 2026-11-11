@@ -173,10 +173,6 @@ def _folder_entry(name: str) -> dict[str, Any]:
     return {"name": name.rstrip("/"), "size": 0, "type": "directory"}
 
 
-_POSITIONAL = ("account_name", "credential")
-"""The arguments of `AbfsFileSystem` that may come by position, in order."""
-
-
 class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
     """The metaclass of `AbfsFileSystem`: its instances are cached by account.
 
@@ -189,14 +185,9 @@ class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
     """
 
     def __call__(cls, *args: Any, **kwargs: Any) -> Any:
-        if len(args) > len(_POSITIONAL):
-            raise TypeError(
-                f"{cls.__name__} takes at most {len(_POSITIONAL)} positional arguments"
-            )
-        for name, value in zip(_POSITIONAL, args, strict=False):
-            if name in kwargs:
-                raise TypeError(f"{cls.__name__} got multiple values for {name!r}")
-            kwargs[name] = value
+        if args:
+            # Refused before the account is checked, which would say it is missing.
+            raise TypeError(f"{cls.__name__} takes keyword arguments only")
 
         account_url = kwargs.get("account_url")
         if account_url is not None:
@@ -299,7 +290,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     --------
     >>> from azure.identity.aio import DefaultAzureCredential
     >>> fs = AbfsFileSystem(
-    ...     "myaccount",
+    ...     account_name="myaccount",
     ...     credential=DefaultAzureCredential(),
     ...     is_hns_enabled=True,
     ... )
@@ -328,9 +319,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
     def __init__(
         self,
+        *,
         account_name: str | None = None,
         credential: Any = None,
-        *,
         account_domain: AccountDomain | None = None,
         account_url: str | None = None,
         is_hns_enabled: bool | None = None,

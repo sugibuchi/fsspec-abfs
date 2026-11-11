@@ -124,8 +124,8 @@ async def test_the_file_system_takes_them_from_its_storage_options() -> None:
     from fsspec_abfs.abfs import AbfsFileSystem  # noqa: PLC0415
 
     fs = AbfsFileSystem(
-        "acct",
-        "azure-cli",
+        account_name="acct",
+        credential="azure-cli",
         tenant_id="t",
         asynchronous=True,
         skip_instance_cache=True,
