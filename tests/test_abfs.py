@@ -84,6 +84,65 @@ async def test_cat_and_pipe(fs, tree) -> None:
     assert await fs._cat_file(f"{tree}/new/n.txt") == b"data"
 
 
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        (None, None),
+        (2, None),
+        (None, 3),
+        (1, 4),
+        (-3, None),
+        (-4, -1),
+        (3, 3),
+        (20, None),
+    ],
+)
+async def test_cat_file_slices_as_python(fs, tree, start, end) -> None:
+    assert await fs._cat_file(f"{tree}/a/x.txt", start, end) == b"hello"[start:end]
+
+
+async def test_cat_file_is_one_download(fs, dummy, tree) -> None:
+    dummy.requests.clear()
+    await fs._cat_file(f"{tree}/a/x.txt")
+    await fs._cat_file(f"{tree}/a/x.txt", start=1, end=3)
+    # No properties read first, as adlfs's.
+    assert len(dummy.requests) == 2
+
+
+def _max_in_flight(records: list) -> int:
+    """The most requests the dummy served at once, from their start and end times."""
+    events = sorted(
+        [(r.started, 1) for r in records] + [(r.ended, -1) for r in records],
+        # An end before a start at the same instant: they did not overlap.
+        key=lambda e: (e[0], e[1]),
+    )
+    most = current = 0
+    for _, step in events:
+        current += step
+        most = max(most, current)
+    return most
+
+
+async def test_cat_of_many_files_keeps_to_io_limit(make_fs, dummy, tree) -> None:
+    fs = make_fs(io_concurrency=3)
+    paths = [f"{tree}/many/{i}" for i in range(12)]
+    for path in paths:
+        await fs._pipe_file(path, b"x")
+    dummy.requests.clear()
+    dummy.delay = 0.05  # Long enough for requests sent together to overlap.
+
+    assert await fs._cat(paths) == dict.fromkeys(paths, b"x")
+    assert _max_in_flight(dummy.requests) == 3
+
+
+async def test_cat_file_of_a_directory_or_missing(fs, tree, hns) -> None:
+    # A folder's marker blob with HNS, none without: as opening it.
+    with pytest.raises(IsADirectoryError if hns else FileNotFoundError):
+        await fs._cat_file(f"{tree}/a")
+    with pytest.raises(FileNotFoundError):
+        await fs._cat_file(f"{tree}/nothing")
+
+
 async def test_multipart_write(fs, root) -> None:
     f = await fs._open_file(f"{root}/big.bin", "wb")
     assert isinstance(f, AbfsWritableFile)
@@ -206,12 +265,12 @@ async def test_listing_pages(dummy, fs, root, hns) -> None:
     assert dummy.count("ListPaths" if hns else "ListBlobs") == 3
 
 
-async def test_blob_listing_of_folders(dummy, fs, tree) -> None:
+async def test_blob_listing_of_folders(dummy, make_fs, tree) -> None:
     # Unknown, so listed by the blob API. With HNS, it lists a folder twice:
     # as a blob, and as a prefix.
-    fs._is_hns_enabled = None
     dummy.failures["GetAccountInformation"] = (403, "AuthorizationPermissionMismatch")
     dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure")
+    fs = make_fs(is_hns_enabled=None)
     assert sorted(await fs._ls(tree, detail=False)) == [f"{tree}/a", f"{tree}/z.txt"]
     assert dummy.count("ListBlobs") == 1
 
@@ -251,13 +310,45 @@ async def test_mv_renames(dummy, fs, tree) -> None:
 
 
 @pytest.mark.hns_only
-async def test_mv_file_creates_parents(dummy, fs, tree) -> None:
+async def test_mv_creates_parents(dummy, fs, tree) -> None:
     dummy.requests.clear()
-    await fs._mv_file(f"{tree}/z.txt", f"{tree}/new/deep/z.txt")
-    # Refused for the missing parent, which is created, then renamed again.
-    assert dummy.count("RenamePath") == 2
+    await fs._mv(f"{tree}/z.txt", f"{tree}/new/deep/z.txt")
+    # The strategy creates the missing parent first: one rename, never refused.
+    assert dummy.count("RenamePath") == 1
     assert dummy.count("CreatePath") == 1
     assert {"work/new", "work/new/deep"} <= set(dummy.folders("c"))
+
+
+@pytest.mark.hns_only
+async def test_mv_between_containers(dummy, fs, tree) -> None:
+    await fs._makedirs("c2", exist_ok=True)
+    dummy.requests.clear()
+    # The account renames folders, but each container is a rename domain of
+    # its own: a folder's move between two is refused, with nothing copied.
+    # Containers as filesystems under a router would copy it instead.
+    with pytest.raises(OSError) as info:
+        await fs._mv(f"{tree}/a", "c2/moved", recursive=True)
+    assert errno.EXDEV in (
+        info.value.errno,
+        getattr(info.value.__cause__, "errno", None),
+    )
+    assert dummy.count("RenamePath") == 0
+    assert dummy.count("CopyBlob") == 0
+    assert dummy.files("c2") == {}
+    assert set(dummy.files("c")) >= {"work/a/x.txt", "work/a/b/y.txt"}
+
+    # A file still moves between containers: copied, then deleted.
+    await fs._mv(f"{tree}/z.txt", "c2/z.txt")
+    assert set(dummy.files("c2")) == {"z.txt"}
+
+
+@pytest.mark.hns_only
+async def test_rm_recursive_file(dummy, fs, tree) -> None:
+    dummy.requests.clear()
+    await fs._rm(f"{tree}/z.txt", recursive=True)
+    # A file root goes by the same recursive delete.
+    assert dummy.count("DeletePath") == 1
+    assert "work/z.txt" not in dummy.files("c")
 
 
 @pytest.mark.flat_only
@@ -312,10 +403,10 @@ async def test_cp_missing_container(dummy, fs, tree) -> None:
     assert info.value.filename == "nocontainer/copy"
 
 
-async def test_unknown_hns_marks_folders(dummy, fs, root) -> None:
-    fs._is_hns_enabled = None
+async def test_unknown_hns_marks_folders(dummy, make_fs, root) -> None:
     dummy.failures["GetAccountInformation"] = (403, "AuthorizationPermissionMismatch")
     dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure")
+    fs = make_fs(is_hns_enabled=None)
     await fs._pipe_file(f"{root}/a/x.txt", b"1")
 
     # A blob marking a folder: a real folder with HNS, a marker blob without.

@@ -55,9 +55,8 @@ def test_subclasses(azure_error) -> None:
 
 
 def test_azure_errors_context() -> None:
-    with pytest.raises(OSError) as info:
-        with azure_errors("c/a"):
-            raise ServiceRequestError("no network")
+    with pytest.raises(OSError) as info, azure_errors("c/a"):
+        raise ServiceRequestError("no network")
     assert info.value.errno == errno.EIO
     assert isinstance(info.value.__cause__, ServiceRequestError)
 

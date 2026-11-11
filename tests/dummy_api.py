@@ -87,13 +87,22 @@ class Container:
 
 @dataclass(frozen=True)
 class Recorded:
-    """A request served: its API, the REST operation's name, e.g. ``ListBlobs``, its method and path."""
+    """A request served: its API, the REST operation's name, e.g. ``ListBlobs``, its method and path.
+
+    ``bytes_in`` is the request body's size and ``bytes_out`` the response body's, the data that a real network would
+    carry. ``started`` and ``ended`` are `time.perf_counter` readings at its arrival and its answer: the benchmark
+    finds from them which requests overlapped, so they include the injected ``DummyStorage.delay``.
+    """
 
     service: str
     operation: str
     method: str
     path: str
     params: dict[str, str]
+    bytes_in: int = 0
+    bytes_out: int = 0
+    started: float = 0.0
+    ended: float = 0.0
 
 
 @dataclass
@@ -117,6 +126,13 @@ class DummyStorage:
 
     copy_outcome: str = "success"
 
+    delay: float = 0.0
+    """Seconds each request waits before its answer, without blocking others.
+
+    The handlers answer at once, so without it no two requests would overlap and the log could not tell concurrent
+    requests from sequential ones. The benchmark sets it to see which requests a client sends together.
+    """
+
     _etags: Any = field(default_factory=lambda: itertools.count(1))
 
     def reset(self, *, hns: bool = False) -> None:
@@ -127,6 +143,7 @@ class DummyStorage:
         self.page_size = 5000
         self.copy_pending_reads = 0
         self.copy_outcome = "success"
+        self.delay = 0.0
 
     # For tests.
 
@@ -248,9 +265,7 @@ def _error(service: str, request: Request, e: ApiError) -> Response:
     return Response(body, e.status, headers, media_type="application/xml")
 
 
-def _blob_operation(  # noqa: C901 - one branch per REST operation, as Azure's reference lists them.
-    method: str, container: str, key: str, q: Any, h: Any
-) -> str:
+def _blob_operation(method: str, container: str, key: str, q: Any, h: Any) -> str:
     """The REST operation a blob API request is, by its path, method, query and headers, or "" if not simulated."""
     if not container:
         if q.get("restype") == "account" and q.get("comp") == "properties":
@@ -306,6 +321,7 @@ def _dfs_operation(method: str, container: str, key: str, q: Any, h: Any) -> str
 @app.api_route("/{service}", methods=_METHODS)
 @app.api_route("/{service}/{rest:path}", methods=_METHODS)
 async def handle(service: str, request: Request, rest: str = "") -> Response:
+    started = time.perf_counter()
     container, _, key = rest.partition("/")
     key = key.strip("/")
     q, h = request.query_params, request.headers
@@ -317,6 +333,11 @@ async def handle(service: str, request: Request, rest: str = "") -> Response:
         else ""
     )
     storage = _storage
+    if storage.delay:
+        await asyncio.sleep(storage.delay)
+    response = _answer(storage, service, operation, container, key, request, body)
+    # Recorded once answered, so that its end and its size are known; a HEAD
+    # answer carries a Content-Length but no body.
     storage.requests.append(
         Recorded(
             service,
@@ -324,8 +345,25 @@ async def handle(service: str, request: Request, rest: str = "") -> Response:
             request.method,
             f"{container}/{key}".rstrip("/"),
             dict(q),
+            bytes_in=len(body),
+            bytes_out=0 if request.method == "HEAD" else len(response.body),
+            started=started,
+            ended=time.perf_counter(),
         )
     )
+    return response
+
+
+def _answer(
+    storage: DummyStorage,
+    service: str,
+    operation: str,
+    container: str,
+    key: str,
+    request: Request,
+    body: bytes,
+) -> Response:
+    q, h = request.query_params, request.headers
     try:
         if not operation:
             raise ApiError(

@@ -25,7 +25,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fsspec>=2024.6.0",
     # The interface of the strategies, which are copied into the package.
-    "fsspec-alt-strategies>=0.1,<1",
+    "fsspec-alt-strategies>=0.3,<0.4",
     "azure-identity",
     "azure-storage-file-datalake",
     "aiohttp",
@@ -48,7 +48,7 @@ dev = [
     # The dummy API server of the tests, tests/dummy_api.py.
     "fastapi>=0.162.2",
     # The command copying the strategies, and their simulated file system.
-    "fsspec-alt-strategies-impl[cli]>=0.1,<1",
+    "fsspec-alt-strategies-impl[cli]>=0.3,<0.4",
     "hypercorn>=0.18.0",
     "pre-commit>=4.0",
     "pytest>=9.1.1",

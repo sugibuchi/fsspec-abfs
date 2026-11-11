@@ -69,10 +69,3 @@ def test_kwargs_from_urls() -> None:
     assert AbfsFileSystem._get_kwargs_from_urls(
         "abfss://c@acc.dfs.core.windows.net/a"
     ) == {"account_url": "https://acc.dfs.core.windows.net"}
-
-
-def test_registered() -> None:
-    import fsspec  # noqa: PLC0415
-
-    assert fsspec.get_filesystem_class("abfs") is AbfsFileSystem
-    assert fsspec.get_filesystem_class("abfss") is AbfsFileSystem

@@ -56,7 +56,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    from dotenv import load_dotenv  # noqa: PLC0415
+    from dotenv import load_dotenv
 
     load_dotenv()
     for marker in (
@@ -189,7 +189,7 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
         endpoints: tuple[str, str] | None = request.getfixturevalue("dummy_endpoints")
         url = "https://dummy.dfs.core.windows.net/"
     else:
-        from azure.identity.aio import DefaultAzureCredential  # noqa: PLC0415
+        from azure.identity.aio import DefaultAzureCredential
 
         url, container = _live_settings(hns)
         endpoints = None

@@ -52,11 +52,13 @@ from ._contrib.strategy.files.fsspec_transaction import (
 )
 from ._contrib.strategy.tree.filesystem import TreeFileSystem
 from ._errors import azure_errors, describe, os_error
+from ._listing import list_blobs_flat
 from ._paths import account_url_of, parse_account_url, split_path, strip_protocol
+from ._ranges import plan
 from .credentials import StorageCredential
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+    from collections.abc import AsyncIterator
 
     from azure.storage.blob.aio import BlobClient
 
@@ -77,31 +79,36 @@ _MiB = 1024 * 1024
 HNS_PROFILE = StorageProfile(
     fs_type="tree",
     parents_required=False,
-    implicit_folders=False,
+    implicit_directories=False,
     renames_files=True,
-    renames_folders=True,
+    renames_directories=True,
+    deletes_directories=True,
 )
 """An account with a hierarchical namespace.
 
 - Its folders are paths of their own: an empty one exists, and is deleted by
   a request of its own.
 - A blob written creates its missing parent folders, as the blob API does on
-  such an account. A rename does not: `AbfsFileSystem._mv_file` creates them.
-- A rename moves a file, or a folder with all in it, in one atomic request.
+  such an account. A rename does not: the strategies create them first.
+- A rename moves a file, or a folder with all in it, in one atomic request,
+  within a container: see `AbfsFileSystem._mv_file`.
+- A folder is deleted with all in it in one request, by the Data Lake API.
 """
 
 NO_HNS_PROFILE = StorageProfile(
     fs_type="tree",
     parents_required=False,
-    implicit_folders=True,
+    implicit_directories=True,
     renames_files=False,
-    renames_folders=False,
+    renames_directories=False,
+    deletes_directories=False,
 )
 """An account without a hierarchical namespace: blobs whose folders are prefixes.
 
-It is still listed a folder per request, by the blob API's delimiter, so the
-tree strategies suit it. A folder exists only through the blobs under it, and
-there is no rename: a move copies on the server, then deletes.
+It is still listed a folder per request, by the blob API's delimiter, and a
+whole subtree by one listing without it, so the tree strategies suit it. A
+folder exists only through the blobs under it, and there is no rename: a move
+copies on the server, then deletes.
 """
 
 UNKNOWN_HNS_PROFILE = StorageProfile(fs_type="tree", parents_required=False)
@@ -213,8 +220,12 @@ class AbfsFileSystem(TreeFileSystem):
     protocol: ClassVar[tuple[str, ...]] = ("abfs", "abfss")
     root_marker = ""
 
-    operation_concurrency: int = 32
-    """The default of the strategies' requests at a time."""
+    operation_concurrency: int = 100
+    """The default of the strategies' requests at a time.
+
+    Most are small, e.g. a deletion or a server-side copy, so their round trips
+    weigh more than the account's throughput: adlfs sends about as many.
+    """
 
     io_concurrency: int = 16
     """The default of the files' range reads and block uploads at a time."""
@@ -244,9 +255,10 @@ class AbfsFileSystem(TreeFileSystem):
             self.storage_credential.kind == "TokenCredential"
             and self.storage_credential.value is not credential
         )
-        # Set before TreeFileSystem's check of the profile, which reads it.
+        # Declared, or set once `_hns` asks: the storage profile follows it.
         self._is_hns_enabled: bool | None = is_hns_enabled
-        self._hns_warned = False
+        # The container whose root ACL `_hns` may ask: see `_account_profile`.
+        self._probe_container = ""
 
         # Both clients, made together on the loop of their first use.
         self._blob_service_client: BlobServiceClient | None = None
@@ -277,14 +289,16 @@ class AbfsFileSystem(TreeFileSystem):
     # The clients.
 
     # The SDK's async clients hold an aiohttp session, bound to the loop of its
-    # first request: a filesystem used on another loop gets new ones.
+    # first request. A filesystem belongs to one loop, as fsspec caches its
+    # async instances per loop: the clients are made once, and that loop kept
+    # for closing them.
 
     def _ensure_service_clients(self) -> None:
-        """Make both service clients on the running loop, unless made there already."""
+        """Make both service clients, on the running loop, unless made already."""
         if self._closed:
             raise RuntimeError("The file system is already closed")
-        loop = asyncio.get_running_loop()
-        if self._client_loop is not loop:
+        if self._client_loop is None:
+            loop = asyncio.get_running_loop()
             # Both on the account's two endpoints, with the same credential.
             self._blob_service_client = BlobServiceClient(
                 self._blob_url, credential=self.storage_credential.value
@@ -295,12 +309,12 @@ class AbfsFileSystem(TreeFileSystem):
             self._client_loop = loop
 
     def _blob_service(self) -> BlobServiceClient:
-        """The Blob service client of the running loop."""
+        """The Blob service client."""
         self._ensure_service_clients()
         return self._blob_service_client  # type: ignore[return-value]
 
     def _dfs_service(self) -> DataLakeServiceClient:
-        """The Data Lake service client of the running loop."""
+        """The Data Lake service client."""
         self._ensure_service_clients()
         return self._dfs_service_client  # type: ignore[return-value]
 
@@ -349,28 +363,40 @@ class AbfsFileSystem(TreeFileSystem):
     def is_hns_enabled(self) -> bool | None:
         """Whether the account has a hierarchical namespace: None while unknown.
 
-        Declared to the constructor, or else asked by the first operation
-        needing it, and kept once sure. An unknown answer is asked again by
-        the next operation: a wrong one kept would last as long as the
-        filesystem, e.g. folders never created, or moves not atomic.
+        Declared to the constructor, or else asked once, by the first
+        operation needing the storage profile. An account that cannot tell
+        stays unknown for the filesystem's life, with `UNKNOWN_HNS_PROFILE`,
+        right on both kinds of account.
         """
         return self._is_hns_enabled
 
-    @property
-    def storage_profile(self) -> StorageProfile:  # type: ignore[override]
-        """The profile of the account, as far as known: see `is_hns_enabled`."""
-        return _PROFILES[self._is_hns_enabled]
+    async def _load_storage_profile(self) -> StorageProfile:
+        """The profile of the account, asked once: see `_hns`.
+
+        The account is one namespace, so one profile fits the filesystem. The
+        base class awaits this once, and keeps what it returns.
+        """
+        return _PROFILES[await self._hns(self._probe_container)]
+
+    async def _account_profile(self, container: str) -> StorageProfile:
+        """The storage profile, from a primitive operating in ``container``.
+
+        The container is noted first: if the account must be asked, its root
+        ACL is a probe a container's SAS or role is allowed.
+        """
+        if container and not self._probe_container:
+            self._probe_container = container
+        return await self._get_storage_profile()
 
     async def _hns(self, container: str) -> bool | None:
         """Whether the account has a hierarchical namespace: True, False, or None if unsure.
 
-        Asked until known, then kept. Concurrent first callers may each ask:
-        a few requests, once, cost less than sharing one.
+        Awaited by `_load_storage_profile`, once per filesystem.
 
         1. The blob service's account information says so, but needs a role
            on the account: a container's SAS or role is refused it.
-        2. Else the root ACL of ``container``, the container of the path
-           operated on, from the Data Lake API: an account without a
+        2. Else the root ACL of ``container``, the container a primitive
+           operated on first, from the Data Lake API: an account without a
            hierarchical namespace refuses it by an error code of its own. Any
            other failure tells nothing.
 
@@ -406,45 +432,25 @@ class AbfsFileSystem(TreeFileSystem):
             except AzureError as e:
                 last = e
 
-        if not self._hns_warned:
-            self._hns_warned = True
-            logger.warning(
-                "Cannot tell whether the account %s has a hierarchical namespace"
-                " (%s): using the blob API, and moves by copy and delete, until"
-                " known. Pass is_hns_enabled to say.",
-                self.account_name,
-                describe(last) if last else "no container to ask",
-            )
+        logger.warning(
+            "Cannot tell whether the account %s has a hierarchical namespace"
+            " (%s): using the blob API, and moves by copy and delete. Pass"
+            " is_hns_enabled to say.",
+            self.account_name,
+            describe(last) if last else "no container to ask",
+        )
         return None
 
-    async def _hns_of(self, path: str | Sequence[str]) -> bool | None:
-        """`_hns`, for the container of a path or of the first of paths."""
-        first = path if isinstance(path, str) else next(iter(path), "")
-        return await self._hns(split_path(self._strip_protocol(first))[0])
+    async def _rm_tree(self, path: str) -> None:
+        """Delete a folder with all in it, or a file, by one Data Lake request.
 
-    # The strategies read the profile when they start: the account is asked first.
-
-    async def _rm(self, path: Any, recursive: bool = False, *args: Any, **kwargs: Any):
-        await self._hns_of(path)
-        return await super()._rm(path, recursive, *args, **kwargs)
-
-    async def _copy(self, path1: Any, path2: Any, *args: Any, **kwargs: Any):
-        await self._hns_of(path1)
-        return await super()._copy(path1, path2, *args, **kwargs)
-
-    async def _mv(self, path1: Any, path2: Any, *args: Any, **kwargs: Any):
-        await self._hns_of(path1)
-        return await super()._mv(path1, path2, *args, **kwargs)
-
-    @property
-    def _rm_tree(self) -> Callable[[str], Awaitable[None]] | None:  # type: ignore[override]
-        # The Data Lake API deletes a folder with all in it, in one request.
-        return self._delete_tree if self._is_hns_enabled else None
-
-    async def _delete_tree(self, path: str) -> None:
-        container, key = split_path(self._strip_protocol(path))
+        Called only with a hierarchical namespace, as `HNS_PROFILE` declares.
+        """
+        path = self._strip_protocol(path)
+        container, key = split_path(path)
         if not key:
             raise IsADirectoryError(errno.EISDIR, "Not deleting a container", path)
+        # A path's deletion: of a folder, recursive, or of a file.
         directory = self._dfs_service().get_directory_client(container, key)
         with azure_errors(path):
             await directory.delete_directory()
@@ -474,7 +480,11 @@ class AbfsFileSystem(TreeFileSystem):
                 ).get_blob_properties()
                 return _blob_entry(container, props)
             except ResourceNotFoundError:
-                if self._is_hns_enabled:
+                # With a hierarchical namespace, a folder is a path of its
+                # own: no prefix to list. The profile is asked once at most.
+                if (
+                    await self._account_profile(container)
+                ).implicit_directories is False:
                     raise
 
             # A folder that is only a prefix: one blob under it is enough.
@@ -484,7 +494,9 @@ class AbfsFileSystem(TreeFileSystem):
                 return _folder_entry(path)
         raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
 
-    async def _ils(self, path: str, **kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+    async def _ils(
+        self, path: str, recursive: bool = False, **kwargs: Any
+    ) -> AsyncIterator[dict[str, Any]]:
         path = self._strip_protocol(path)
         container, key = split_path(path)
         if not container:
@@ -495,12 +507,15 @@ class AbfsFileSystem(TreeFileSystem):
                         "last_modified": c.last_modified,
                         "etag": c.etag,
                     }
+                    if recursive:
+                        async for entry in self._ils(c.name, recursive=True):
+                            yield entry
             return
 
-        if await self._hns(container):
-            listing = self._ils_dfs(container, key)
+        if (await self._account_profile(container)).implicit_directories is False:
+            listing = self._ils_dfs(container, key, recursive)
         else:
-            listing = self._ils_blob(container, key)
+            listing = self._ils_blob(container, key, recursive)
 
         listed = False
         try:
@@ -523,10 +538,12 @@ class AbfsFileSystem(TreeFileSystem):
             if entry["type"] != "directory":
                 yield entry
 
-    async def _ils_dfs(self, container: str, key: str) -> AsyncIterator[dict[str, Any]]:
-        """One folder's paths, from the Data Lake API, as they come a page at a time."""
+    async def _ils_dfs(
+        self, container: str, key: str, recursive: bool = False
+    ) -> AsyncIterator[dict[str, Any]]:
+        """One folder's paths, or all below it, from the Data Lake API, a page at a time."""
         file_system = self._dfs_service().get_file_system_client(container)
-        async for p in file_system.get_paths(path=key or None, recursive=False):
+        async for p in file_system.get_paths(path=key or None, recursive=recursive):
             name = f"{container}/{p.name}"
             if p.is_directory:
                 yield {
@@ -544,7 +561,7 @@ class AbfsFileSystem(TreeFileSystem):
                 }
 
     async def _ils_blob(
-        self, container: str, key: str
+        self, container: str, key: str, recursive: bool = False
     ) -> AsyncIterator[dict[str, Any]]:
         """One folder's blobs and prefixes, from the blob API, as they come a page at a time.
 
@@ -555,6 +572,13 @@ class AbfsFileSystem(TreeFileSystem):
         """
         prefix = f"{key}/" if key else ""
         container_client = self._blob_service().get_container_client(container)
+        if recursive:
+            # All blobs below, folders' marker blobs included: the strategies
+            # tell the folders without one from the paths below them. Each next
+            # page is asked for while one is parsed: see _listing.
+            async for entry in list_blobs_flat(container_client, container, prefix):
+                yield entry
+            return
         folders: set[str] = set()
         async for item in container_client.walk_blobs(
             name_starts_with=prefix, delimiter="/", include=["metadata"]
@@ -606,8 +630,10 @@ class AbfsFileSystem(TreeFileSystem):
             # API's is not, on an account with a hierarchical namespace. Where
             # the service does not refuse a folder with things in, it is checked.
             # A container's deletion is recursive on both kinds of account.
-            refused_by_service = self._is_hns_enabled and key
-            if not refused_by_service and await self._has_children(container, key):
+            real = (
+                await self._account_profile(container)
+            ).implicit_directories is False
+            if not (real and key) and await self._has_children(container, key):
                 raise OSError(errno.ENOTEMPTY, "Directory not empty", path)
             if not key:
                 await self._blob_service().delete_container(container)
@@ -615,7 +641,7 @@ class AbfsFileSystem(TreeFileSystem):
             try:
                 await self._blob(container, key).delete_blob()
             except ResourceNotFoundError:
-                if self._is_hns_enabled:
+                if real:
                     raise
                 # A folder with no blob of its own is gone with its last blob.
 
@@ -645,12 +671,12 @@ class AbfsFileSystem(TreeFileSystem):
             if not key:
                 return
 
-            hns = await self._hns(container)
-            if hns:
+            implicit = (await self._account_profile(container)).implicit_directories
+            if implicit is False:
                 await dfs_service.get_directory_client(
                     container, key
                 ).create_directory()
-            elif hns is None:
+            elif implicit is None:
                 # A blob marking a folder: a real folder on an account with a
                 # hierarchical namespace, a marker blob on one without, which
                 # the listings take as a folder.
@@ -658,16 +684,6 @@ class AbfsFileSystem(TreeFileSystem):
                     b"", metadata={"hdi_isfolder": "true"}, overwrite=True
                 )
             # Without a hierarchical namespace, a folder is made by its files.
-
-    async def _mkdir(
-        self, path: str, create_parents: bool = True, **kwargs: Any
-    ) -> None:
-        path = self._strip_protocol(path)
-        if not create_parents:
-            parent = self._parent(path)
-            if parent and not await self._isdir(parent):
-                raise FileNotFoundError(errno.ENOENT, "No parent folder", parent)
-        await self._makedirs(path, exist_ok=False)
 
     async def _cp_file(self, path1: str, path2: str, **kwargs: Any) -> None:
         """Copy a blob on the server, waiting for the copy if it is pending.
@@ -700,32 +716,116 @@ class AbfsFileSystem(TreeFileSystem):
         if status != "success":
             raise OSError(errno.EIO, f"Copy from {path1} ended as {status}", path2)
 
+    async def _cp_file_entry(
+        self, entry: dict[str, Any], path2: str, **kwargs: Any
+    ) -> None:
+        """Copy a blob by its entry, as `_cp_file` does: a copy on the server needs nothing of it."""
+        await self._cp_file(entry["name"], path2, **kwargs)
+
+    async def _mv_file_entry(
+        self, entry: dict[str, Any], path2: str, **kwargs: Any
+    ) -> None:
+        """Move a file or a folder by its entry, as `_mv_file` does, telling a folder by it."""
+        await self._move(entry["name"], path2, entry)
+
+    async def _mv_tree(self, path1: str, path2: str) -> None:
+        """Move a folder with all in it, or a file, as `_mv_file` does: one rename within a container."""
+        await self._move(path1, path2, None)
+
     async def _mv_file(self, path1: str, path2: str, **kwargs: Any) -> None:
         """Move a file, or a folder with all in it: a rename with a hierarchical namespace.
 
-        A rename is atomic, but only within a container: a move between two,
-        or on an account without a hierarchical namespace, copies on the
-        server, then deletes.
+        A rename is atomic, but only within a container: a file moved between
+        two, or on an account without a hierarchical namespace, is copied on
+        the server, then deleted.
+
+        A folder moved between two containers is refused, before anything is
+        copied, by an `OSError` with ``EXDEV``. The profile declares renames
+        of folders for the whole account, so no strategy falls back for it:
+        each container is a rename domain of its own.
+
+        It asks the path's properties only for a move between containers, to
+        tell a folder, where the library's ``_mv_file`` always asks them.
         """
+        await self._move(path1, path2, None)
+
+    async def _move(self, path1: str, path2: str, entry: dict[str, Any] | None) -> None:
+        """Move a path, by a rename or a copy and a deletion, with its entry if known."""
         path1, path2 = self._strip_protocol(path1), self._strip_protocol(path2)
         c1, k1 = split_path(path1)
         c2, k2 = split_path(path2)
-        if not (await self._hns(c1)) or c1 != c2 or not k1 or not k2:
-            await super()._mv_file(path1, path2)
+        profile = await self._account_profile(c1)
+        if not profile.renames_files or c1 != c2 or not k1 or not k2:
+            # Copying a folder would copy its own blob, then fail deleting it.
+            if profile.renames_directories and c1 != c2:
+                if entry is None:
+                    entry = await self._info(path1)
+                if entry["type"] == "directory":
+                    raise OSError(
+                        errno.EXDEV, "No rename of a folder between containers", path1
+                    )
+            await self._cp_file(path1, path2)
+            await self._rm_file(path1)
             return
 
-        source = self._dfs_service().get_file_client(c1, k1)
+        # A rename creates no parent: the strategies create it first.
+        source = self._dfs_service().get_file_client(*split_path(path1))
         with azure_errors(path1):
-            try:
-                await source.rename_file(f"{c2}/{k2}")
-            except ResourceNotFoundError as e:
-                # A rename creates no parent, where a write does.
-                if e.error_code != "RenameDestinationParentPathNotFound":
-                    raise
-                await self._makedirs(self._parent(path2), exist_ok=True)
-                await source.rename_file(f"{c2}/{k2}")
+            await source.rename_file(path2)
 
     # Files.
+
+    async def _cat_file(
+        self,
+        path: str,
+        start: int | None = None,
+        end: int | None = None,
+        **kwargs: Any,
+    ) -> bytes:
+        """Read a blob, or a range of it, by one download, with no properties read first.
+
+        The SDK asks a range by its offset, so a suffix counted from the end, as an end so counted, needs the size
+        first. A missing blob raises FileNotFoundError from the download's 404. A directory is a marker blob with a
+        hierarchical namespace, or no blob without one: it raises IsADirectoryError or FileNotFoundError, as
+        `_open_file` does.
+        """
+        path = self._strip_protocol(path)
+        container, key = split_path(path)
+        if not key:
+            raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
+        info: dict[str, Any] = {}
+
+        async def size() -> int:
+            info.update(await self._info(path))
+            return int(info["size"])
+
+        wanted = await plan(start, end, size, suffix=False)
+        if wanted.empty:
+            if (info or await self._info(path))["type"] == "directory":
+                raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
+            return b""
+        length = None if wanted.end is None else wanted.end - wanted.start
+        # A read of data, as the files' are: under io_limit, or fsspec's cat of many paths sends them all at once.
+        with azure_errors(path):
+            async with self.io_limit:
+                try:
+                    # The SDK fetches beyond its first 32 MiB in 4 MiB chunks, one at a
+                    # time by default: a whole 132 MiB file took 27 rounds. They go at
+                    # once, as many as the readers' spread, under this one permit.
+                    downloader = await self._blob(container, key).download_blob(
+                        offset=None if wanted.whole else wanted.start,
+                        length=length,
+                        max_concurrency=AbfsReadableFile.spread,
+                    )
+                except HttpResponseError as e:
+                    if e.status_code == 416:
+                        return (
+                            b""  # Beyond the end: nothing, as fsspec's slicing gives.
+                        )
+                    raise
+                if (downloader.properties.metadata or {}).get("hdi_isfolder") == "true":
+                    raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
+                return await downloader.readall()
 
     async def _open_file(self, path: str, mode: str, **kwargs: Any) -> Any:
         """Open an adaptive file on the running loop."""
@@ -754,7 +854,7 @@ class AbfsFileSystem(TreeFileSystem):
             path,
             loop,
             blob=blob,
-            exclusive=mode == "xb",
+            mode=mode,
             concurrency_limit=self.io_limit,
         )
 
@@ -781,10 +881,10 @@ class AbfsFileSystem(TreeFileSystem):
 
 
 class AbfsReadableFile(AdaptiveReadableFile):
-    """A blob read by ranges, all of one version: its ETag, by If-Match."""
+    """A blob read by ranges, all of one version: its ETag, by If-Match.
 
-    min_block_size: int = _MiB // 2
-    max_block_size: int = 8 * _MiB
+    Its block and split sizes are the library's, measured on Azure: see GAPS.md and the benchmark.
+    """
 
     def __init__(
         self,
@@ -823,8 +923,10 @@ class AbfsWritableFile(AdaptiveWritableFile):
     """A block blob, uploaded whole, or in blocks committed on closing.
 
     Blocks staged but never committed take no visible place: the service
-    drops them after a week. So an abort sends nothing, leaving any file
-    already at the path as it was.
+    drops them after a week. So the file is written whole, or not at all,
+    and an abort sends nothing, leaving any file already at the path as it
+    was. Mode "xb" is checked by the request making the file visible, with
+    ``If-None-Match: *``, so that no other writer can slip in.
     """
 
     min_block_size: int = 4 * _MiB
@@ -837,12 +939,10 @@ class AbfsWritableFile(AdaptiveWritableFile):
         loop: asyncio.AbstractEventLoop,
         *,
         blob: BlobClient,
-        exclusive: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(path, loop, **kwargs)
         self._blob_client = blob
-        self.exclusive = exclusive
         self._upload_id = ""
 
     def _conditions(self) -> dict[str, Any]:
