@@ -886,8 +886,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     ) -> bytes:
         """Read a blob, or a range of it, by one download, with no properties read first.
 
-        The SDK asks a range by its offset, so a suffix counted from the end, as an end so counted, needs the size
-        first. A missing blob raises FileNotFoundError from the download's 404. A directory is a marker blob with a
+        The SDK asks a range by its offsets, so a start or an end counted from the end of the file needs the file's
+        size first. A missing blob raises FileNotFoundError from the download's 404. A directory is a marker blob with a
         hierarchical namespace, or no blob without one: it raises IsADirectoryError or FileNotFoundError, as
         `_open_file` does.
         """
@@ -989,7 +989,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 class AbfsReadableFile(AdaptiveReadableFile):
     """A blob read by ranges, all of one version: its ETag, by If-Match.
 
-    Its block and split sizes are the library's, measured on Azure: see GAPS.md and the benchmark.
+    Its block and split sizes are the library's defaults, which were measured on Azure.
     """
 
     def __init__(

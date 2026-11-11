@@ -31,7 +31,7 @@ option overrides its variable. A test id names its API and its kind of account, 
 | File                  | Tests of                                                         |
 |-----------------------|------------------------------------------------------------------|
 | `test_abfs.py`        | `AbfsFileSystem` and its file objects, over HTTP                 |
-| `test_hns.py`         | The probe of the hierarchical namespace, and the profiles        |
+| `test_hns.py`         | The check of the hierarchical namespace, and the profiles        |
 | `test_listing.py`     | `_listing.py`'s ListBlobs paging, against the SDK's listing      |
 | `test_credentials.py` | `credentials.py`: what each value passed as a credential gives   |
 | `test_errors.py`      | `_errors.py`, with no server                                     |
@@ -102,7 +102,8 @@ Switches of `dummy` make the server answer as a given account:
 - `failures` maps an operation to the status and code it fails with, e.g. to refuse the account information;
 - `page_size` limits the entries of a listing's page;
 - `copy_pending_reads` answers copies as pending, for as many property reads;
-- `copy_outcome` is the status of a pending copy at its end, e.g. `failed`.
+- `copy_outcome` is the status of a pending copy at its end, e.g. `failed`;
+- `delay` holds each answer back, so that requests sent together overlap in `dummy.requests`.
 
 Where Azure's references leave behaviour open, the dummy makes an assumption, marked in a comment:
 
@@ -134,7 +135,7 @@ folder, which can hold these variables.
 Only live tests check what the dummy assumes, and what it does not model:
 
 - Azure's real answers where the references are silent, listed above;
-- authentication, SAS tokens and roles, and the probe refused by them;
+- authentication, SAS tokens and roles, and the hierarchical namespace check they may refuse;
 - the latency, throttling and retries of a real service.
 
 ## CI
@@ -177,15 +178,8 @@ The live tests authenticate as a user-assigned managed identity, by workload ide
 stored. The identity needs Storage Blob Data Contributor on the test container of each account. An Entra ID app works
 the same.
 
-| Variable                            | Value                                                         |
-|-------------------------------------|---------------------------------------------------------------|
-| `AZURE_CLIENT_ID`                   | The identity's client ID                                      |
-| `AZURE_TENANT_ID`                   | Its tenant's ID                                               |
-| `FSSPEC_ABFS_TEST_HNS_ACCOUNT_URL`  | The endpoint of an account with a hierarchical namespace      |
-| `FSSPEC_ABFS_TEST_FLAT_ACCOUNT_URL` | The endpoint of an account without one                        |
-| `FSSPEC_ABFS_TEST_CONTAINER`        | A container of that name in each account                      |
-
-The kinds of account tested are those whose endpoint is set. The identity's federated credential names the issuer
+Its variables are the identity's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`, and those of [Live tests](#live-tests). The
+kinds of account tested are those whose endpoint is set. The identity's federated credential names the issuer
 `https://token.actions.githubusercontent.com`, the subject `repo:sugibuchi/fsspec-abfs:environment:azure` and the
 audience `api://AzureADTokenExchange`.
 
@@ -390,10 +384,14 @@ Put Blob or Put Block List until commit.
 ## The copy of fsspec-alt-strategies
 
 `src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, from the library's `wip`
-branch after 0.3.0: its `_version.py` names the commit. It keeps
-only what `AbfsFileSystem` uses: `tree/`, `common/` and `files/`. `AbfsFileSystem` lists a whole tree by Azure's own
-recursive listings, so the tree family's fallback, `tree/listing.py`, is left out too. `_version.py` stays, as the
-copy's command line recognises a previous copy by it. Ruff skips the copy.
+branch after 0.3.0: its `_version.py` names the commit. It keeps only what `AbfsFileSystem` uses: `tree/`, `common/`
+and `files/`. `AbfsFileSystem` lists a whole tree by Azure's own recursive listings, so the tree family's fallback,
+`tree/listing.py`, is left out too. Two files stay:
+
+- `_version.py`, as the copy's command line recognises a previous copy by it;
+- `LICENSE`, the library's Apache License, which goes with its code.
+
+Ruff skips the copy.
 
 Its interface is not copied: it is the dependency `fsspec-alt-strategies>=0.3,<0.4`, bounded at the copy's minor
 version, as a minor release may break the copy before 1.0. Until the library's next release, `[tool.uv.sources]` takes

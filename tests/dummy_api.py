@@ -90,8 +90,8 @@ class Recorded:
     """A request served: its API, the REST operation's name, e.g. ``ListBlobs``, its method and path.
 
     ``bytes_in`` is the request body's size and ``bytes_out`` the response body's, the data that a real network would
-    carry. ``started`` and ``ended`` are `time.perf_counter` readings at its arrival and its answer: the benchmark
-    finds from them which requests overlapped, so they include the injected ``DummyStorage.delay``.
+    carry. ``started`` and ``ended`` are `time.perf_counter` readings at its arrival and its answer: the tests find
+    from them which requests overlapped, so they include the injected ``DummyStorage.delay``.
     """
 
     service: str
@@ -130,7 +130,7 @@ class DummyStorage:
     """Seconds each request waits before its answer, without blocking others.
 
     The handlers answer at once, so without it no two requests would overlap and the log could not tell concurrent
-    requests from sequential ones. The benchmark sets it to see which requests a client sends together.
+    requests from sequential ones. The tests set it to see which requests a client sends together.
     """
 
     _etags: Any = field(default_factory=lambda: itertools.count(1))

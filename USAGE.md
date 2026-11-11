@@ -254,7 +254,7 @@ with fs.transaction:
         f.write(b"b")
 ```
 
-A file's blocks are uploaded when it is closed, and committed when the block ends. A file under 8 MiB is held in
+A file's blocks are uploaded as it is written, and committed when the block ends. A file under 8 MiB is held in
 memory until then.
 
 Limits:
