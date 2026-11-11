@@ -85,7 +85,7 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         - "server-side" has the destination's account copy it from the
           source's URL, with no data through this process. The URL carries a
           user delegation SAS when the source's credential is a token one,
-          see `AbfsFileSystem.get_user_delegation_key`, the source's own SAS when it is one,
+          see `AbfsFileSystem._get_user_delegation_key`, the source's own SAS when it is one,
           or nothing when anonymous.
     **storage_options
         The default credential's options, and those of

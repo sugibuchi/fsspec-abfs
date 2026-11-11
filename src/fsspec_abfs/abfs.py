@@ -39,7 +39,7 @@ from azure.core.exceptions import (
 from azure.storage.blob import BlobBlock, BlobSasPermissions, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.filedatalake.aio import DataLakeServiceClient
-from fsspec.asyn import sync, sync_wrapper
+from fsspec.asyn import sync
 from fsspec_alt_strategies.profile import StorageProfile
 
 from ._contrib.strategy.files.adaptive import (
@@ -378,10 +378,10 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     copy_poll_interval: float = 0.2
     """The first wait, in seconds, before checking a pending server-side copy. It doubles up to 5 s."""
 
-    user_delegation_key_lifetime: timedelta = timedelta(days=1)
+    _user_delegation_key_lifetime: timedelta = timedelta(days=1)
     """How long a user delegation key asked for is valid. Azure allows 7 days at most."""
 
-    user_delegation_key_margin: timedelta = timedelta(hours=12)
+    _user_delegation_key_margin: timedelta = timedelta(hours=12)
     """How long a kept user delegation key must still be valid: else a new one is asked for.
 
     A copy from another account reads its source while it runs, so the source's
@@ -917,7 +917,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         if status != "success":
             raise OSError(errno.EIO, f"Copy from {source} ended as {status}", path)
 
-    # Signed URLs, for another account's copy.
+    # Signed URLs, for a copy by another account: see `AbfsFileSystems`.
 
     async def _get_user_delegation_key(self) -> UserDelegationKey:
         """The account's user delegation key, asked for once and kept until it nears its expiry.
@@ -928,9 +928,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         Contributor and Owner, and Storage Blob Delegator, give at the
         account's level.
 
-        The key is asked for once, valid for `user_delegation_key_lifetime`,
+        The key is asked for once, valid for `_user_delegation_key_lifetime`,
         and kept. A new one is asked for when the kept one has less than
-        `user_delegation_key_margin` left. Concurrent callers wait for one
+        `_user_delegation_key_margin` left. Concurrent callers wait for one
         request.
 
         Returns
@@ -953,18 +953,16 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
         async with self._user_delegation_lock:
             key = self._user_delegation_key
-            margin = self.user_delegation_key_margin
+            margin = self._user_delegation_key_margin
             if key is None or _key_expiry(key) - datetime.now(UTC) < margin:
                 start = datetime.now(UTC) - _CLOCK_SKEW
                 with azure_errors(f"{self.account_name}.blob.{self.account_domain}"):
                     key = await self._blob_service().get_user_delegation_key(
                         key_start_time=start,
-                        key_expiry_time=start + self.user_delegation_key_lifetime,
+                        key_expiry_time=start + self._user_delegation_key_lifetime,
                     )
                 self._user_delegation_key = key
             return key
-
-    get_user_delegation_key = sync_wrapper(_get_user_delegation_key)
 
     async def _readable_url(self, path: str) -> str:
         """A blob's URL, with what lets another account read it, by the credential.
@@ -990,7 +988,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         elif self.credential.kind == "SharedKey":
             signing = {
                 "account_key": self.credential.value,
-                "expiry": start + self.user_delegation_key_lifetime,
+                "expiry": start + self._user_delegation_key_lifetime,
             }
         else:
             return url

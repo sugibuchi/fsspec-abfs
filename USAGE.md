@@ -124,47 +124,6 @@ fs = AbfsFileSystem(account_name="myaccount", credential="sv=...&sig=...")
 A credential made from a keyword or a class name is closed with the file system. Sync credentials, of
 `azure.identity` rather than `azure.identity.aio`, are refused: the file system's clients are async.
 
-### User delegation keys
-
-A user delegation key signs SAS tokens with the identity of a token credential, with no account key. The file system
-asks its account for one, and keeps it:
-
-```python
-from datetime import UTC, datetime, timedelta
-
-from azure.storage.blob import BlobSasPermissions, generate_blob_sas
-
-key = fs.get_user_delegation_key()  # or, in async code: await fs._get_user_delegation_key()
-
-sas = generate_blob_sas(
-    fs.account_name,
-    "mycontainer",
-    "data/file.csv",
-    user_delegation_key=key,
-    permission=BlobSasPermissions(read=True),
-    expiry=datetime.now(UTC) + timedelta(hours=1),
-)
-```
-
-- The first call asks the account for a key, valid for a day. The calls after take the key kept, until it has less
-  than 12 hours left.
-- Concurrent calls wait for one request.
-- A SAS signed by a key expires with the key at the latest.
-- Asking for a key needs a token credential: any other raises `ValueError`.
-- The identity needs a role at the account's level, e.g. Storage Blob Data Reader, Contributor or Delegator. With a
-  role on a container only, the request raises `PermissionError`.
-
-The class fields `user_delegation_key_lifetime` and `user_delegation_key_margin` set the two durations. Azure allows 7
-days at most:
-
-```python
-from datetime import timedelta
-
-class MyAbfsFileSystem(AbfsFileSystem):
-    user_delegation_key_lifetime = timedelta(days=7)
-    user_delegation_key_margin = timedelta(days=1)
-```
-
 ---
 
 ## Paths
@@ -374,7 +333,8 @@ With `"server-side"`, the source's URL carries what lets the destination's accou
 - anonymous, nothing: the source must be public.
 
 A user delegation SAS needs a key that the identity asks the source account for. That needs a role at the source
-account's level, as [User delegation keys](#user-delegation-keys) says. Each SAS is valid until its key expires, so
+account's level, e.g. Storage Blob Data Reader, Contributor or Delegator: a role on a container only is refused. The
+key is kept for a day, and asked for again with less than 12 hours left. Each SAS is valid until its key expires, so
 that a long copy keeps reading its source.
 
 A move between two accounts copies each file, then deletes it. A source whose copy failed is kept.

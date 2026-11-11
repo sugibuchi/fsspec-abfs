@@ -380,7 +380,7 @@ async def test_user_delegation_key_is_kept() -> None:
     assert all(k is keys[0] for k in keys)
     assert await fs._get_user_delegation_key() is keys[0]
     start, expiry = fs.asked[0]
-    assert expiry - start == fs.user_delegation_key_lifetime
+    assert expiry - start == fs._user_delegation_key_lifetime
 
 
 async def test_user_delegation_key_is_renewed_near_its_expiry() -> None:
