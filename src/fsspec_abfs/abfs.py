@@ -328,6 +328,11 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         self._is_hns_enabled: bool | None = is_hns_enabled
         self.storage_profile = _PROFILES[is_hns_enabled]
 
+        # The user delegation key that `get_user_delegation_key` keeps, and
+        # the lock asking for one at a time.
+        self._user_delegation_key: Any = None
+        self._user_delegation_lock = asyncio.Lock()
+
         # Both clients, made together on the loop of their first use.
         self._blob_service_client: BlobServiceClient | None = None
         self._dfs_service_client: DataLakeServiceClient | None = None
@@ -797,14 +802,28 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         Works with or without a hierarchical namespace. The source's URL is
         its client's, carrying a SAS token when the credential is one.
         """
-        (c1, k1), (c2, k2) = self.split_path(path1), self.split_path(path2)
-        path1, path2 = self._strip_protocol(path1), self._strip_protocol(path2)
-        if not k1 or not k2:
+        container, key = self.split_path(path1)
+        path1 = self._strip_protocol(path1)
+        if not key:
             raise IsADirectoryError(errno.EISDIR, "Is a container", path1)
 
-        source, destination = self._blob(c1, k1), self._blob(c2, k2)
+        # The destination is checked there, as for a copy from another account.
+        await self._copy_from_url(self._blob(container, key).url, path1, path2)
+
+    async def _copy_from_url(self, source_url: str, source: str, path: str) -> None:
+        """Copy a blob from ``source_url`` to ``path`` on the server, waiting for the copy if it is pending.
+
+        ``source_url`` is a blob's URL, of this account or another, with what
+        authorizes reading it, e.g. a SAS. ``source`` names it in errors.
+        """
+        container, key = self.split_path(path)
+        path = self._strip_protocol(path)
+        if not key:
+            raise IsADirectoryError(errno.EISDIR, "Is a container", path)
+
+        destination = self._blob(container, key)
         try:
-            copy = await destination.start_copy_from_url(source.url)
+            copy = await destination.start_copy_from_url(source_url)
             status = copy.get("copy_status")
             delay = self.copy_poll_interval
             while status == "pending":
@@ -814,12 +833,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 status = props.copy.status
         except ResourceNotFoundError as e:
             # The source missing, by the service's code: else the destination's container.
-            missing = path2 if e.error_code == "ContainerNotFound" else path1
+            missing = path if e.error_code == "ContainerNotFound" else source
             raise os_error(e, missing) from e
         except AzureError as e:
-            raise os_error(e, path2) from e
+            raise os_error(e, path) from e
         if status != "success":
-            raise OSError(errno.EIO, f"Copy from {path1} ended as {status}", path2)
+            raise OSError(errno.EIO, f"Copy from {source} ended as {status}", path)
 
     async def _cp_file_entry(
         self, entry: dict[str, Any], path2: str, **kwargs: Any

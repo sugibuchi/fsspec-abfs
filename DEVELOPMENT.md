@@ -37,6 +37,7 @@ option overrides its variable. A test id names its API and its kind of account, 
 | `test_errors.py`      | `_errors.py`, with no server                                     |
 | `test_paths.py`       | `_paths.py`, the account's arguments and the cache, no server    |
 | `test_package.py`     | The package itself                                               |
+| `test_routing.py`     | `AbfsFileSystems` over two dummy accounts, the delegation key    |
 
 The fixtures of `tests/conftest.py`:
 
@@ -231,6 +232,8 @@ strategies for fsspec. `AbfsFileSystem` implements only the primitives of Azure'
   last request back until fsspec's transaction commits.
 - **Monitors:** the operations behind fsspec's methods report their progress to the monitors of the interface
   package, and can be cancelled.
+- **Router:** `AbfsFileSystems` is an `AsyncRoutingFileSystem`. It sends each URL to its account's file system, and
+  copies or moves files between accounts with the source's tree strategies.
 
 The strategies are copied into the package rather than installed, so that a release of the library never changes this
 package's behaviour. Their shared interface, `fsspec-alt-strategies`, is installed.
@@ -247,6 +250,21 @@ Every account serves two APIs over the same storage, on two endpoints:
 
 Whether the account has a hierarchical namespace is declared by `is_hns_enabled`, or asked once. While it is unknown,
 the file system takes the way right on both kinds: the blob API, and moves by copy and delete.
+
+### Many accounts by their URLs
+
+`AbfsFileSystems` takes only Hadoop's URLs, which name their account. Its paths are those URLs, protocol included, so
+that a name it answers is usable anywhere, e.g. by Spark. Each account is an `AbfsFileSystem` of its own.
+
+Its default credential is a Microsoft Entra ID token credential only. A SAS, a shared key or anonymous access each
+fit one account, so an account needing one is given it in `filesystems`.
+
+A copy between two accounts goes one of two ways, chosen by `cross_account_copy`:
+
+- `"streaming"`, the default, reads each file and writes it through this process. It works with any credentials.
+- `"server-side"` has the destination copy each file from the source's URL, with no data through this process. A
+  token credential reads the source by a user delegation SAS. That needs the action `generateUserDelegationKey` at
+  the source account's level.
 
 ### Fewer requests
 
@@ -287,12 +305,13 @@ arguments, and unpickling calls the constructor again:
 | `abfs.py`            | `AbfsFileSystem`, its three storage profiles, and its file objects                |
 | `_paths.py`          | The accounts, URLs and paths, as regular expressions                              |
 | `credentials.py`     | `StorageCredential`: what each value passed as a credential gives                 |
+| `routing.py`         | `AbfsFileSystems`, and `get_user_delegation_key`                                  |
 | `_errors.py`         | Azure's errors as `OSError`s                                                      |
 | `_listing.py`        | The blob API's recursive listing, a page asked for while the last one is parsed   |
 | `_contrib/strategy/` | The copy of fsspec-alt-strategies                                                 |
 
-`__init__.py` imports `AbfsFileSystem` on first use, as the Azure SDK is slow to import. The entry points register it
-for `abfs` and `abfss`, replacing adlfs' registration.
+`__init__.py` imports `AbfsFileSystem` and `AbfsFileSystems` on first use, as the Azure SDK is slow to import. The
+entry points register `AbfsFileSystem` for `abfs` and `abfss`, replacing adlfs' registration.
 
 ### The account and the cache
 
@@ -385,9 +404,9 @@ Put Blob or Put Block List until commit.
 ## The copy of fsspec-alt-strategies
 
 `src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, from the library's `wip`
-branch after 0.3.0: its `_version.py` names the commit. It keeps only what `AbfsFileSystem` uses: `tree/`, `common/`
-and `files/`. `AbfsFileSystem` lists a whole tree by Azure's own recursive listings, so the tree family's fallback,
-`tree/listing.py`, is left out too. Two files stay:
+branch after 0.3.0: its `_version.py` names the commit. It keeps only what the package uses: `tree/`, `common/`,
+`files/` and `router.py`. `AbfsFileSystem` lists a whole tree by Azure's own recursive listings, so the tree family's
+fallback, `tree/listing.py`, is left out too. Two files stay:
 
 - `_version.py`, as the copy's command line recognises a previous copy by it;
 - `LICENSE`, the library's Apache License, which goes with its code.
@@ -406,11 +425,11 @@ To refresh it:
    uv run --with "fsspec-alt-strategies-impl[cli]==<version>" fsspec-alt-strategies-impl copy src/fsspec_abfs/_contrib/strategy
    ```
 
-2. Delete again what `AbfsFileSystem` does not use:
+2. Delete again what the package does not use:
 
    ```bash
    cd src/fsspec_abfs/_contrib/strategy
-   rm -r flat wrapper monitor.py router.py __init__.py common/sync_client.py tree/listing.py
+   rm -r flat wrapper monitor.py __init__.py common/sync_client.py tree/listing.py
    ```
 
 3. Update the version above, and the interface's bounds in `pyproject.toml`, then run `uv lock` and the tests.

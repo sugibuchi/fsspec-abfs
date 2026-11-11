@@ -266,6 +266,78 @@ Limits:
 
 ---
 
+## Many accounts: AbfsFileSystems
+
+`AbfsFileSystems` works on any account, each URL on the account it names. It makes an `AbfsFileSystem` for each
+account when first needed.
+
+```python
+from fsspec_abfs import AbfsFileSystems
+
+fs = AbfsFileSystems(
+    filesystems=[
+        {"account_name": "myaccount", "is_hns_enabled": True},
+        {"account_name": "opendata", "credential": "anonymous"},
+    ],
+)
+
+fs.ls("abfss://raw@myaccount.dfs.core.windows.net/data")
+```
+
+### Paths
+
+It takes Spark's and Hadoop's URLs only: `abfss://<container>@<account>.dfs.<domain>/<path>`, or `abfs://`. Any
+other path raises `ValueError`, as it names no account.
+
+The URLs are its paths, protocol included. `ls`, `info`, `find` and `glob` answer full URLs, always `abfss://`, in
+lower case, without a trailing `/`.
+
+### Options
+
+| Parameter               | Description                                                                         | Default       |
+|-------------------------|-------------------------------------------------------------------------------------|---------------|
+| `credential`            | The default credential: a Microsoft Entra ID token credential only.                 | `"default"`   |
+| `filesystems`           | The arguments of `AbfsFileSystem` for some accounts, a dict per account.            | `None`        |
+| `operation_concurrency` | Maximum concurrent requests of a recursive operation, for each account.             | `100`         |
+| `io_concurrency`        | Maximum concurrent range reads and block uploads, for each account.                 | `16`          |
+| `transfer_concurrency`  | Maximum files copied between two accounts at a time.                                | `8`           |
+| `cross_account_copy`    | How a file is copied between two accounts: `"streaming"` or `"server-side"`.        | `"streaming"` |
+
+`credential` takes an async token credential, or a keyword or a class name naming one, as in
+[Authentication](#authentication). A SAS token, a shared key or `"anonymous"` raises `ValueError`: each fits one
+account, so give it to that account in `filesystems`. A credential named by a string takes its options from the other
+keyword arguments, e.g. `tenant_id`.
+
+Each dict of `filesystems` names its account by `account_name`, with `account_domain`, or by `account_url`. The other
+keys are those of `AbfsFileSystem`, e.g. `credential` or `is_hns_enabled`. A dict without `credential`,
+`operation_concurrency` or `io_concurrency` takes the router's. Any account not listed takes the router's too.
+
+### Copies and moves between accounts
+
+Within an account, a copy or a move is the account's own, e.g. a rename. Between two accounts, files are copied one by
+one, `transfer_concurrency` at a time, as `cross_account_copy` says:
+
+| `cross_account_copy` | Each file                                                       | Needs                                                  |
+|----------------------|-----------------------------------------------------------------|--------------------------------------------------------|
+| `"streaming"`        | Read and written through this process, a block at a time        | Reading the source, and writing the destination        |
+| `"server-side"`      | Copied by the destination's account from the source's URL       | The source's URL readable by the destination's account |
+
+With `"server-side"`, the source's URL carries what lets the destination's account read it:
+
+- with a token credential, a user delegation SAS, reading that file only;
+- with a SAS, the source's own SAS;
+- with a shared key, a SAS signed by the key;
+- anonymous, nothing: the source must be public.
+
+A user delegation SAS needs a key that the identity asks the source account for. That needs a role at the source
+account's level, e.g. Storage Blob Data Reader, Contributor or Delegator: a role on a container only is refused. The
+key is kept for a day, and asked for again with less than 12 hours left. Each SAS is valid until its key expires, so
+that a long copy keeps reading its source.
+
+A move between two accounts copies each file, then deletes it. A source whose copy failed is kept.
+
+---
+
 ## Limitations
 
 ### No directory cache

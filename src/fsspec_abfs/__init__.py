@@ -17,7 +17,11 @@ def __getattr__(name: str) -> object:
         from .abfs import AbfsFileSystem  # noqa: PLC0415
 
         return AbfsFileSystem
+    elif name == "AbfsFileSystems":
+        from .routing import AbfsFileSystems  # noqa: PLC0415
+
+        return AbfsFileSystems
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["AbfsFileSystem", "__version__"]
+__all__ = ["AbfsFileSystem", "AbfsFileSystems", "__version__"]

@@ -26,6 +26,8 @@ and any library that takes fsspec can use it through `abfs://` and `abfss://` UR
 * Authenticates with [Microsoft Entra ID](https://learn.microsoft.com/en-us/python/api/overview/azure/identity-readme)
   credentials, SAS tokens or account keys.
 * Streams listings, and runs recursive operations, such as `find`, `rm` and `copy`, with concurrent requests.
+* Works on many accounts at once with `AbfsFileSystems`, copying between two of them through this process or on the
+  server.
 
 ---
 
@@ -71,6 +73,25 @@ operation's behaviour.
 | `/<container>/<path>`                                        | A path in a container of the account       |
 | `/`                                                          | The root, listing the account's containers |
 | `abfss://<container>@<account>.dfs.core.windows.net/<path>`  | The same path, as Spark and Hadoop name it |
+
+### Many accounts
+
+`AbfsFileSystems` takes Spark's and Hadoop's URLs of any account, and answers the same URLs:
+
+```python
+from fsspec_abfs import AbfsFileSystems
+
+fs = AbfsFileSystems(
+    filesystems=[{"account_name": "opendata", "credential": "anonymous"}],
+    cross_account_copy="server-side",
+)
+
+fs.copy(
+    "abfss://public@opendata.dfs.core.windows.net/dataset",
+    "abfss://raw@myaccount.dfs.core.windows.net/dataset",
+    recursive=True,
+)
+```
 
 ---
 
