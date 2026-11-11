@@ -151,7 +151,7 @@ def test_the_default_credential_is_a_token_credential(credential: str) -> None:
 
 
 def test_none_is_refused_as_a_credential() -> None:
-    with pytest.raises(ValueError, match="Microsoft Entra ID"):
+    with pytest.raises(TypeError, match="anonymous"):
         AbfsFileSystems(credential=None, skip_instance_cache=True)
 
 
@@ -209,6 +209,13 @@ def test_a_credential_object_is_the_callers() -> None:
     fs = AbfsFileSystems(credential=token, skip_instance_cache=True)
     assert fs.credential.value is token
     assert not fs._owns_credential
+
+
+def test_a_closed_router_refuses_calls() -> None:
+    fs = AbfsFileSystems(credential=_Token(), skip_instance_cache=True)
+    fs.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        fs.filesystem("myaccount")
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from azure.core.credentials_async import AsyncTokenCredential
 
-__all__ = ["TOKEN_CREDENTIALS", "StorageCredential", "token_credential_options"]
+__all__ = ["TOKEN_CREDENTIALS", "StorageCredential"]
 
 TOKEN_CREDENTIALS: dict[str, str] = {
     "default": "azure.identity.aio.DefaultAzureCredential",
@@ -132,48 +132,13 @@ def _make(
     Those only its ``**kwargs`` takes are not known, so a file system's other
     options are never passed through them.
     """
-    return token_class(**_named_options(token_class, options))
-
-
-def _named_options(
-    token_class: type[AsyncTokenCredential], options: dict[str, Any]
-) -> dict[str, Any]:
-    """The options that the constructor of ``token_class`` names."""
     named = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     names = {
         p.name
         for p in inspect.signature(token_class).parameters.values()
         if p.kind in named
     }
-    return {n: v for n, v in options.items() if n in names}
-
-
-def token_credential_options(
-    credential: Any, options: dict[str, Any]
-) -> dict[str, Any]:
-    """The options of ``options`` that the token credential ``credential`` takes, checking it is one.
-
-    ``credential`` is an async token credential, or a keyword or a class name
-    naming one, as `StorageCredential.from_credential` takes them. Nothing is
-    made: the class is only loaded. A credential object takes no option.
-
-    Raises ValueError for any other credential, e.g. a SAS token, a shared key
-    or "anonymous", and TypeError for a class that is no async token
-    credential.
-    """
-    if isinstance(credential, AsyncTokenCredential):
-        return {}
-    elif isinstance(credential, str) and (
-        credential in TOKEN_CREDENTIALS or _is_class_name(credential)
-    ):
-        token_class = _load(TOKEN_CREDENTIALS.get(credential, credential))
-        return _named_options(token_class, options)
-    else:
-        # The value itself is never quoted: it may be a secret.
-        raise ValueError(
-            "credential must be a Microsoft Entra ID token credential: an async token"
-            f" credential, or a keyword naming one, e.g. {', '.join(TOKEN_CREDENTIALS)}"
-        )
+    return token_class(**{n: v for n, v in options.items() if n in names})
 
 
 def _is_class_name(value: str) -> bool:

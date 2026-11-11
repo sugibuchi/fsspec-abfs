@@ -25,7 +25,7 @@ from ._paths import (
     split_stripped,
 )
 from .abfs import AbfsFileSystem, close_on_loop
-from .credentials import StorageCredential, token_credential_options
+from .credentials import StorageCredential
 
 if TYPE_CHECKING:
     from azure.storage.blob import UserDelegationKey
@@ -171,9 +171,12 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
     Raises
     ------
     ValueError
-        If ``credential`` is no token credential, ``cross_account_copy`` none
-        of its values, or an account of ``accounts`` given twice or not at
-        all.
+        If ``credential`` gives a credential of another kind than a token
+        one, ``cross_account_copy`` is none of its values, or an account of
+        ``accounts`` is given twice or not at all.
+    TypeError
+        If ``credential`` is neither a credential object nor a string, e.g.
+        None, as `StorageCredential.from_credential` refuses it.
 
     Examples
     --------
@@ -212,9 +215,15 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
                 f" {cross_account_copy!r}"
             )
 
-        # Checked first, as a SAS or a key would make a credential of another kind.
-        options = token_credential_options(credential, storage_options)
-        self.credential = StorageCredential.from_credential(credential, **options)
+        self.credential = StorageCredential.from_credential(
+            credential, **storage_options
+        )
+        if self.credential.kind != "TokenCredential":
+            # A SAS, a key or anonymous access fits one account: none is the default.
+            raise ValueError(
+                "The default credential must be a Microsoft Entra ID token credential,"
+                f" not {self.credential.kind}: give an account its own in accounts"
+            )
         # One made from a string is the router's to close, with its accounts.
         self._owns_credential = self.credential.value is not credential
         self._closed = False
