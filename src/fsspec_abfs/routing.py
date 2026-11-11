@@ -9,7 +9,7 @@ user delegation SAS: see ``cross_account_copy``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from ._contrib.strategy.router import AsyncRoutingFileSystem
 from ._paths import (
@@ -22,9 +22,6 @@ from ._paths import (
 from .abfs import AbfsFileSystem, close_on_loop, resolve_account
 from .credentials import StorageCredential
 
-if TYPE_CHECKING:
-    from fsspec.asyn import AsyncFileSystem
-
 __all__ = ["AbfsFileSystems", "CrossAccountCopy"]
 
 CrossAccountCopy = Literal["streaming", "server-side"]
@@ -34,7 +31,7 @@ _Account = tuple[str, str]
 """An account's name and domain, e.g. ("myaccount", "core.windows.net")."""
 
 
-class AbfsFileSystems(AsyncRoutingFileSystem):
+class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
     """An async fsspec filesystem of any Azure storage account, by Hadoop's ABFS URLs.
 
     It takes only Hadoop's URLs, which name their account:
@@ -206,17 +203,13 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         """A blob's URL that reads it with no other credential, by its account's `AbfsFileSystem._sign`."""
         return await self._forward(path, "_sign", expiration=expiration, **kwargs)
 
-    def _route(self, path: str) -> tuple[AsyncFileSystem, str]:
+    def _route(self, path: str) -> tuple[AbfsFileSystem, str]:
         account, domain, container, key = parse_hadoop_url(path)
         return self.filesystem(account, domain), f"/{container}/{key}".rstrip("/")
 
-    def _outer(self, fs: AsyncFileSystem, path: str) -> str:
+    def _outer(self, fs: AbfsFileSystem, path: str) -> str:
         container, key = split_stripped(path)
-        return hadoop_url(container, key, fs.account_name, fs.account_domain)  # type: ignore[attr-defined]
-
-    async def _roots(self, path: str) -> list[dict[str, Any]]:
-        # Every path routes: a URL names a container of an account.
-        raise ValueError(f"No ABFS URL of a container: {path!r}")
+        return hadoop_url(container, key, fs.account_name, fs.account_domain)
 
     def filesystem(
         self, account_name: str, account_domain: str = DEFAULT_DOMAIN
@@ -252,7 +245,7 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
                 skip_instance_cache=True,
             )
 
-        return self._backend(account, make)  # type: ignore[return-value]
+        return self._backend(account, make)
 
     def close(self) -> None:
         """Close the accounts' file systems, then the credential the router made.
@@ -261,26 +254,22 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         which its sessions are bound to: unused, it holds nothing. A closed
         router refuses further calls, as `AbfsFileSystem` does.
         """
-        loops = [
-            fs._client_loop  # type: ignore[attr-defined]
-            for fs in self._backends.values()
-            if getattr(fs, "_client_loop", None) is not None
-        ]
+        loop = self.backends_loop
         self._closed = True
         try:
             super().close()
         finally:
-            if self._owns_credential and loops:
-                close_on_loop(loops[0], [self.credential.value])
+            if self._owns_credential:
+                close_on_loop(loop, [self.credential.value])
                 self._owns_credential = False
 
     # Copies between two accounts.
 
     async def _cross_fs_cp_entry(
         self,
-        src_fs: AsyncFileSystem,
+        src_fs: AbfsFileSystem,
         src_entry: dict[str, Any],
-        dest_fs: AsyncFileSystem,
+        dest_fs: AbfsFileSystem,
         dest_path: str,
     ) -> None:
         """Copy a file between two accounts: streamed, or on the server, as ``cross_account_copy`` says."""
@@ -289,7 +278,6 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         else:
             # The SAS outlives the copy: a user delegation key kept has 12
             # hours left at least, and the copy runs no longer, it is assumed.
-            source: AbfsFileSystem = src_fs  # type: ignore[assignment]
-            expiration = source._user_delegation_key_margin.total_seconds()
-            url = await source._sign(src_entry["name"], expiration=int(expiration))
-            await dest_fs._copy_from_url(url, src_entry["name"], dest_path)  # type: ignore[attr-defined]
+            expiration = src_fs._user_delegation_key_margin.total_seconds()
+            url = await src_fs._sign(src_entry["name"], expiration=int(expiration))
+            await dest_fs._copy_from_url(url, src_entry["name"], dest_path)
