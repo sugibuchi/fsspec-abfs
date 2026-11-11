@@ -99,7 +99,7 @@ HNS_PROFILE = StorageProfile(
 - A blob written creates its missing parent folders, as the blob API does on
   such an account. A rename does not: the strategies create them first.
 - A rename moves a file, or a folder with all in it, in one atomic request,
-  within a container: see `AbfsFileSystem._mv_file`.
+  within a container or between two: see `AbfsFileSystem._mv_file`.
 - A folder is deleted with all in it in one request, by the Data Lake API.
 """
 
@@ -827,53 +827,51 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     async def _mv_file_entry(
         self, entry: dict[str, Any], path2: str, **kwargs: Any
     ) -> None:
-        """Move a file or a folder by its entry, as `_mv_file` does, telling a folder by it."""
-        await self._move(entry["name"], path2, entry)
+        """Move a file or a folder by its entry, as `_mv_file` does: a rename needs nothing of it."""
+        await self._mv_file(entry["name"], path2)
 
     async def _mv_tree(self, path1: str, path2: str) -> None:
-        """Move a folder with all in it, or a file, as `_mv_file` does: one rename within a container."""
-        await self._move(path1, path2, None)
+        """Move a folder with all in it, or a file, as `_mv_file` does: one rename."""
+        await self._mv_file(path1, path2)
 
     async def _mv_file(self, path1: str, path2: str, **kwargs: Any) -> None:
         """Move a file, or a folder with all in it: a rename with a hierarchical namespace.
 
-        A rename is atomic, but only within a container: a file moved between
-        two, or on an account without a hierarchical namespace, is copied on
-        the server, then deleted.
+        A rename is one atomic request, within a container or between two of
+        the account. It needs the destination's parent folder, which the
+        strategies create first. It asks no properties of the path, where the
+        library's ``_mv_file`` always asks them.
 
-        A folder moved between two containers is refused, before anything is
-        copied, by an `OSError` with ``EXDEV``. The profile declares renames
-        of folders for the whole account, so no strategy falls back for it:
-        each container is a rename domain of its own.
-
-        It asks the path's properties only for a move between containers, to
-        tell a folder, where the library's ``_mv_file`` always asks them.
+        On an account without a hierarchical namespace, or not known to have
+        one, a file is copied on the server, then deleted. A container itself
+        is never renamed: moving one raises IsADirectoryError, from the copy.
         """
-        await self._move(path1, path2, None)
-
-    async def _move(self, path1: str, path2: str, entry: dict[str, Any] | None) -> None:
-        """Move a path, by a rename or a copy and a deletion, with its entry if known."""
         (c1, k1), (c2, k2) = self.split_path(path1), self.split_path(path2)
         path1, path2 = self._strip_protocol(path1), self._strip_protocol(path2)
         profile = await self._get_storage_profile(path1)
-        if not profile.renames_files or c1 != c2 or not k1 or not k2:
-            # Copying a folder would copy its own blob, then fail deleting it.
-            if profile.renames_directories and c1 != c2:
-                if entry is None:
-                    entry = await self._info(path1)
-                if entry["type"] == "directory":
-                    raise OSError(
-                        errno.EXDEV, "No rename of a folder between containers", path1
-                    )
+        if not profile.renames_files or not k1 or not k2:
             await self._cp_file(path1, path2)
             await self._rm_file(path1)
             return
 
         # A rename creates no parent: the strategies create it first. Its new
-        # name is "<container>/<path>", without the leading "/".
+        # name is "<container>/<path>", without the leading "/": the container
+        # may be another of the account.
+        new_name = f"{c2}/{k2}"
+        if c1 != c2:
+            # The SDK sends another container's rename with the client's
+            # credential, but holds a SAS in the source's URL only: it takes the
+            # destination's from the new name. Anonymous, it refuses the rename.
+            credential = self.storage_credential
+            if credential.kind == "Anonymous":
+                raise PermissionError(
+                    errno.EACCES, "No anonymous rename between containers", path1
+                )
+            elif credential.kind == "SAS":
+                new_name += f"?{credential.value}"
         source = self._dfs_service().get_file_client(c1, k1)
         with azure_errors(path1):
-            await source.rename_file(f"{c2}/{k2}")
+            await source.rename_file(new_name)
 
     # Files.
 

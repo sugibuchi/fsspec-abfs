@@ -274,8 +274,6 @@ arguments, and unpickling calls the constructor again:
 
 ### Known limits
 
-- **Renames stay within a container.** A file moved between two containers is copied, then deleted. A folder moved
-  between two raises `OSError` with `EXDEV`, before anything is copied.
 - **Recursive methods do not check a URL's account.** They strip it before any primitive sees it.
   `test_recursive_methods_refuse_another_account` marks the gap as an expected failure.
 - **No append or update modes.** `ab` and `r+b` are refused.
@@ -337,7 +335,7 @@ credential object given is the caller's to close.
 | `_rm_file`, `_rmdir`   | Delete Blob                                    | Delete Blob                                    |
 | `_rm_tree`             | Delete Path, recursive                         | Not called                                     |
 | `_cp_file`             | Copy Blob, waited for while pending            | Copy Blob, waited for while pending            |
-| `_mv_file`, `_mv_tree` | Rename Path within a container                 | Copy Blob, then Delete Blob                    |
+| `_mv_file`, `_mv_tree` | Rename Path, into any container of the account | Copy Blob, then Delete Blob                    |
 | `_cat_file`            | Get Blob                                       | Get Blob                                       |
 
 While the namespace is unknown, `_makedirs` writes a blob with the metadata `hdi_isfolder=true`: a real folder with a

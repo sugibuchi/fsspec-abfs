@@ -13,6 +13,9 @@ import pytest
 
 from fsspec_abfs.abfs import AbfsReadableFile, AbfsWritableFile
 
+_SAS = "sv=2025-01-05&ss=b&srt=sco&sp=rwdl&sig=c2ln"
+"""A SAS token in its form, which the dummy takes without checking it."""
+
 
 @pytest.fixture
 async def tree(fs, root):
@@ -338,26 +341,37 @@ async def test_mv_creates_parents(dummy, fs, tree) -> None:
 
 
 @pytest.mark.hns_only
-async def test_mv_between_containers(dummy, fs, tree) -> None:
+async def test_mv_between_containers(dummy, make_fs, tree) -> None:
+    dummy.create_container("c2")
+    # The SDK renames into another container only with a credential: a SAS,
+    # which the dummy takes without checking it, and which goes over HTTP.
+    fs = make_fs(credential=_SAS)
+    dummy.requests.clear()
+    # A folder with all in it moves to another container of the account by one
+    # rename, as within a container: nothing is copied.
+    await fs._mv(f"{tree}/a", "/c2/moved", recursive=True)
+    assert dummy.count("RenamePath") == 1
+    assert dummy.count("CopyBlob") == 0
+    assert set(dummy.files("c2")) == {"moved/x.txt", "moved/b/y.txt"}
+    assert not any(name.startswith("work/a") for name in dummy.files("c"))
+
+    # A file too.
+    dummy.requests.clear()
+    await fs._mv(f"{tree}/z.txt", "/c2/z.txt")
+    assert dummy.count("RenamePath") == 1
+    assert dummy.count("CopyBlob") == 0
+    assert "z.txt" in dummy.files("c2")
+
+
+@pytest.mark.hns_only
+async def test_mv_between_containers_anonymous(dummy, fs, tree) -> None:
+    # Anonymous, the SDK sends no rename into another container: refused first.
     dummy.create_container("c2")
     dummy.requests.clear()
-    # The account renames folders, but each container is a rename domain of
-    # its own: a folder's move between two is refused, with nothing copied.
-    # Containers as filesystems under a router would copy it instead.
-    with pytest.raises(OSError) as info:
-        await fs._mv(f"{tree}/a", "/c2/moved", recursive=True)
-    assert errno.EXDEV in (
-        info.value.errno,
-        getattr(info.value.__cause__, "errno", None),
-    )
+    with pytest.raises(PermissionError):
+        await fs._mv_file(f"{tree}/z.txt", "/c2/z.txt")
     assert dummy.count("RenamePath") == 0
-    assert dummy.count("CopyBlob") == 0
-    assert dummy.files("c2") == {}
-    assert set(dummy.files("c")) >= {"work/a/x.txt", "work/a/b/y.txt"}
-
-    # A file still moves between containers: copied, then deleted.
-    await fs._mv(f"{tree}/z.txt", "/c2/z.txt")
-    assert set(dummy.files("c2")) == {"z.txt"}
+    assert "work/z.txt" in dummy.files("c")
 
 
 @pytest.mark.hns_only

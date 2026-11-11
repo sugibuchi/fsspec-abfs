@@ -196,8 +196,8 @@ container raises `PermissionError`, and of a folder in one `FileNotFoundError`. 
 | `rm` of a folder | One request for the folder with all in it         | One request per file                             |
 | `ls`, `find`     | The Data Lake API's listings                      | The blob API's listings                          |
 
-Renames are atomic within a container. A file moved between two containers is copied, then deleted. A folder moved
-between two containers raises `OSError` with `EXDEV`, before anything is copied.
+A rename is atomic, within a container or between two containers of the account. Between two, it needs a token
+credential or a SAS valid in both containers. Anonymous, it raises `PermissionError`.
 
 Copies run on the server, with no data through this process. A copy still pending is waited for.
 

@@ -200,9 +200,8 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
     def make(**kwargs: Any) -> AbfsFileSystem:
         kwargs.setdefault("is_hns_enabled", hns)
         kwargs.setdefault("asynchronous", True)
-        fs = AbfsFileSystem(
-            credential=credential, skip_instance_cache=True, **account, **kwargs
-        )
+        kwargs.setdefault("credential", credential)
+        fs = AbfsFileSystem(skip_instance_cache=True, **account, **kwargs)
         if endpoints is not None:
             # The clients are made on these at first use: the dummy's, then.
             fs._dfs_url, fs._blob_url = endpoints
