@@ -67,7 +67,7 @@ from ._ranges import plan
 from .credentials import StorageCredential
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator
 
     from azure.storage.blob.aio import BlobClient
 
@@ -320,10 +320,10 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             self.storage_credential.kind == "TokenCredential"
             and self.storage_credential.value is not credential
         )
-        # Declared, or set once `_hns` asks: the storage profile follows it.
+        # Declared, or set once `_hns` asks: the storage profile follows it. Until
+        # loaded, it is the declared account's profile, or the unknown one's.
         self._is_hns_enabled: bool | None = is_hns_enabled
-        # The container whose root ACL `_hns` may ask: see `_ensure_storage_profile`.
-        self._probe_container = ""
+        self.storage_profile = _PROFILES[is_hns_enabled]
 
         # Both clients, made together on the loop of their first use.
         self._blob_service_client: BlobServiceClient | None = None
@@ -467,30 +467,15 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         """
         return self._is_hns_enabled
 
-    async def _load_storage_profile(self) -> StorageProfile:
-        """The profile of the account, asked once: see `_hns`.
+    async def _load_storage_profile(self, path: str) -> StorageProfile:
+        """The profile of the account, asked at the container of ``path``: see `_hns`.
 
         The account is one namespace, so one profile fits the filesystem. The
-        base class awaits this once, and keeps what it returns.
+        base class loads it once, with the paths of the first operation needing
+        it, and keeps it as ``storage_profile``. If the account must be asked,
+        the container's root ACL is a probe a container's SAS or role is allowed.
         """
-        return _PROFILES[await self._hns(self._probe_container)]
-
-    async def _ensure_storage_profile(
-        self, path: str | Sequence[str]
-    ) -> StorageProfile:
-        """The storage profile, loaded once, by the first operation on ``path`` needing it.
-
-        Each operation calls it first: the primitives, and the recursive methods
-        before their strategies load the profile themselves. The container of
-        ``path``, or of the first of its paths, is noted first: if the account
-        must be asked, that container's root ACL is a probe a container's SAS
-        or role is allowed. Each path's account is checked by `split_path`.
-        """
-        paths = [path] if isinstance(path, str) else list(path)
-        containers = [self.split_path(p)[0] for p in paths]
-        if containers and containers[0] and not self._probe_container:
-            self._probe_container = containers[0]
-        return await self._get_storage_profile()
+        return _PROFILES[await self._hns(self.split_path(path)[0])]
 
     async def _hns(self, container: str) -> bool | None:
         """Whether the account has a hierarchical namespace: True, False, or None if unsure.
@@ -557,40 +542,6 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             logger.debug("Containers not listed: %s", describe(e))
         return ""
 
-    # The recursive methods load the profile with the path they are given, as
-    # the primitives do, before their strategies load it with none.
-
-    async def _walk(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path)
-        async for item in super()._walk(path, *args, **kwargs):
-            yield item
-
-    async def _find(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path)
-        return await super()._find(path, *args, **kwargs)
-
-    async def _du(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path)
-        return await super()._du(path, *args, **kwargs)
-
-    async def _glob(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path)
-        return await super()._glob(path, *args, **kwargs)
-
-    async def _rm(self, path: Any, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path)
-        return await super()._rm(path, *args, **kwargs)
-
-    async def _copy(self, path1: Any, path2: Any, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path1)
-        await self._ensure_storage_profile(path2)
-        return await super()._copy(path1, path2, *args, **kwargs)
-
-    async def _mv(self, path1: Any, path2: Any, *args: Any, **kwargs: Any) -> Any:
-        await self._ensure_storage_profile(path1)
-        await self._ensure_storage_profile(path2)
-        return await super()._mv(path1, path2, *args, **kwargs)
-
     async def _rm_tree(self, path: str) -> None:
         """Delete a folder with all in it, or a file, by one Data Lake request.
 
@@ -633,7 +584,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 # With a hierarchical namespace, a folder is a path of its
                 # own: no prefix to list. The profile is asked once at most.
                 if (
-                    await self._ensure_storage_profile(path)
+                    await self._get_storage_profile(path)
                 ).implicit_directories is False:
                     raise
 
@@ -651,7 +602,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         path = self._strip_protocol(path)
         if not container:
             listing = self._ils_containers(recursive)
-        elif (await self._ensure_storage_profile(path)).implicit_directories is False:
+        elif (await self._get_storage_profile(path)).implicit_directories is False:
             listing = self._ils_dfs(container, key, recursive)
         else:
             listing = self._ils_blob(container, key, recursive)
@@ -785,9 +736,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             # API's is not, on an account with a hierarchical namespace. Where
             # the service does not refuse a folder with things in, it is checked.
             # A container's deletion is recursive on both kinds of account.
-            real = (
-                await self._ensure_storage_profile(path)
-            ).implicit_directories is False
+            real = (await self._get_storage_profile(path)).implicit_directories is False
             if not (real and key) and await self._has_children(container, key):
                 raise OSError(errno.ENOTEMPTY, "Directory not empty", path)
             if not key:
@@ -830,7 +779,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
         dfs_service = self._dfs_service()
         with azure_errors(path):
-            implicit = (await self._ensure_storage_profile(path)).implicit_directories
+            implicit = (await self._get_storage_profile(path)).implicit_directories
             if implicit is False:
                 await dfs_service.get_directory_client(
                     container, key
@@ -914,7 +863,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         """Move a path, by a rename or a copy and a deletion, with its entry if known."""
         (c1, k1), (c2, k2) = self.split_path(path1), self.split_path(path2)
         path1, path2 = self._strip_protocol(path1), self._strip_protocol(path2)
-        profile = await self._ensure_storage_profile(path1)
+        profile = await self._get_storage_profile(path1)
         if not profile.renames_files or c1 != c2 or not k1 or not k2:
             # Copying a folder would copy its own blob, then fail deleting it.
             if profile.renames_directories and c1 != c2:

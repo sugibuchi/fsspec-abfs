@@ -31,6 +31,11 @@ dependencies = [
     "aiohttp",
 ]
 
+[tool.uv.sources]
+# Until the interface's next release, which adds UNKNOWN, it comes from a checkout of the library's wip branch
+# beside this repository, as the copy of the strategies does.
+fsspec-alt-strategies = { path = "../fsspec-alt-strategies/packages/common", editable = true }
+
 # fsspec loads the class only when a URL of the protocol is opened: importing
 # fsspec stays cheap. These replace adlfs' registration of the same protocols.
 [project.entry-points."fsspec.specs"]

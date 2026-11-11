@@ -139,13 +139,15 @@ Only live tests check what the dummy assumes, and what it does not model:
 
 ## The copy of fsspec-alt-strategies
 
-`src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, version 0.3.0. It keeps
+`src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, from the library's `wip`
+branch after 0.3.0: its `_version.py` names the commit. It keeps
 only what `AbfsFileSystem` uses: `tree/`, `common/` and `files/`. `AbfsFileSystem` lists a whole tree by Azure's own
 recursive listings, so the tree family's fallback, `tree/listing.py`, is left out too. `_version.py` stays, as the
 copy's command line recognises a previous copy by it. Ruff skips the copy.
 
 Its interface is not copied: it is the dependency `fsspec-alt-strategies>=0.3,<0.4`, bounded at the copy's minor
-version, as a minor release may break the copy before 1.0.
+version, as a minor release may break the copy before 1.0. Until the library's next release, `[tool.uv.sources]` takes
+it from a checkout of the library's `wip` branch beside this repository, at `../fsspec-alt-strategies`.
 
 To refresh it:
 
