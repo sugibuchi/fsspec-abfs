@@ -19,7 +19,7 @@ and any library that takes fsspec can use it through `abfs://` and `abfss://` UR
 * Copies files on the server, without downloading them.
 * Reads a file in one request, and pins the ranges of a file opened to one version of it.
 * Writes a file whole, or not at all, and makes it visible only when it is closed.
-* Authenticates with [Azure Identity](https://learn.microsoft.com/en-us/python/api/overview/azure/identity-readme)
+* Authenticates with [Microsoft Entra ID](https://learn.microsoft.com/en-us/python/api/overview/azure/identity-readme)
   credentials, SAS tokens or account keys.
 * Streams listings, and runs recursive operations, such as `find`, `rm` and `copy`, with concurrent requests.
 
