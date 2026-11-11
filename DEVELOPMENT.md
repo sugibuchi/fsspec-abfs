@@ -176,8 +176,10 @@ ruff, zizmor and actionlint, run with `uvx`, are the exception: CI runs their la
 ### The `azure` environment
 
 The live tests authenticate as a user-assigned managed identity, by workload identity federation: no secret is
-stored. The identity needs Storage Blob Data Contributor on the test container of each account. An Entra ID app works
-the same.
+stored. An Entra ID app works the same. The identity needs two roles on each account:
+
+- Storage Blob Data Contributor on the test container, for the data;
+- Storage Blob Delegator on the account, for the user delegation keys of `AbfsFileSystems`' server-side copies.
 
 Its variables are the identity's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`, and those of [Live tests](#live-tests). The
 kinds of account tested are those whose endpoint is set. The identity's federated credential names the issuer
@@ -296,7 +298,7 @@ arguments, and unpickling calls the constructor again:
   `test_recursive_methods_refuse_another_account` marks the gap as an expected failure.
 - **No append or update modes.** `ab` and `r+b` are refused.
 - **No listing cache.** Each call reaches the account.
-- **`az://` is not registered.** The URLs are understood, but fsspec sends them to adlfs.
+- **`az://` is registered on request only,** by `use(adlfs_protocols=True)`. The entry points leave it to adlfs.
 
 ## Architecture
 

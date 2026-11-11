@@ -36,6 +36,10 @@ fsspec_abfs.use(cross_account=True)
 fs, path = fsspec.url_to_fs("abfss://raw@myaccount.dfs.core.windows.net/data")  # AbfsFileSystems
 ```
 
+adlfs registers `az` too. `use(adlfs_protocols=True)` registers this package for it as well, so that no URL goes to
+adlfs. `AbfsFileSystems` then takes `az://` URLs naming their account only:
+`az://<container>@<account>.dfs.<domain>/<path>`.
+
 ---
 
 ## Options

@@ -61,9 +61,10 @@ _ACCOUNT_URL = re.compile(
 """An account's endpoint, with no container: what ``account_url`` takes."""
 
 _HADOOP_URL = re.compile(
-    rf"(?:abfss?://)?{_CONTAINER}@{_ACCOUNT}\.dfs\.{_DOMAIN}{_PATH}", re.IGNORECASE
+    rf"(?:(?:abfss?|az)://)?{_CONTAINER}@{_ACCOUNT}\.dfs\.{_DOMAIN}{_PATH}",
+    re.IGNORECASE,
 )
-"""Hadoop's URL, with its protocol or without."""
+"""Hadoop's URL, with its protocol or without, or with adlfs' ``az://``."""
 
 _SERVICE_URL = re.compile(
     rf"https://{_ACCOUNT}\.(?:dfs|blob)\.{_DOMAIN}(?:/(?:{_CONTAINER}{_PATH})?)?",
@@ -165,12 +166,12 @@ def hadoop_url(container: str, key: str, account: str, domain: str) -> str:
 def parse_hadoop_url(url: str) -> tuple[str, AccountDomain, str, str]:
     """A Hadoop URL's account, domain, container and path in the container, as `hadoop_url` takes them.
 
-    The URL must carry its protocol, ``abfss://`` or ``abfs://``. The names are
-    in lower case, as Azure takes them, and the path has no "/" around it.
-    Raises ValueError for any other path.
+    The URL must carry its protocol: ``abfss://``, ``abfs://``, or adlfs'
+    ``az://``. The names are in lower case, as Azure takes them, and the path
+    has no "/" around it. Raises ValueError for any other path.
     """
     m = _HADOOP_URL.fullmatch(url.strip())
-    if m is None or not re.match(r"abfss?://", url.strip(), re.IGNORECASE):
+    if m is None or not re.match(r"(?:abfss?|az)://", url.strip(), re.IGNORECASE):
         raise ValueError(
             f"Not a Hadoop URL, abfss://<container>@<account>.dfs.<domain>/<path>: {url!r}"
         )

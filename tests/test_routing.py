@@ -7,6 +7,10 @@ it, so that a copy between them goes as between two accounts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib
+import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +21,7 @@ from azure.core.credentials import AccessToken
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.storage.blob import UserDelegationKey
 
+from fsspec_abfs._paths import hadoop_url, parse_account_url
 from fsspec_abfs.abfs import AbfsFileSystem
 from fsspec_abfs.routing import AbfsFileSystems
 
@@ -413,18 +418,33 @@ def test_sync_router(dummy, dummy_endpoints, hns) -> None:
 
 
 @pytest.mark.parametrize("cross_account", [False, True])
-def test_use(cross_account: bool) -> None:
+@pytest.mark.parametrize("adlfs_protocols", [False, True])
+def test_use(cross_account: bool, adlfs_protocols: bool) -> None:
     import fsspec  # noqa: PLC0415
 
     import fsspec_abfs  # noqa: PLC0415
 
     try:
-        fsspec_abfs.use(cross_account=cross_account)
+        fsspec_abfs.use(cross_account=cross_account, adlfs_protocols=adlfs_protocols)
         expected = AbfsFileSystems if cross_account else AbfsFileSystem
         for protocol in ("abfs", "abfss"):
             assert fsspec.get_filesystem_class(protocol) is expected
+        if adlfs_protocols:
+            assert fsspec.get_filesystem_class("az") is expected
     finally:
         fsspec_abfs.use()  # As the entry points register it.
+        if adlfs_protocols:
+            # A class registered is kept apart from those fsspec knows by name:
+            # forgetting it gives "az" back to adlfs.
+            importlib.import_module("fsspec.registry")._registry.pop("az", None)
+
+
+def test_az_urls_naming_their_account() -> None:
+    # adlfs' protocol, in Hadoop's form, naming its account: answered as abfss://.
+    assert (
+        AbfsFileSystems._strip_protocol("az://c@a.dfs.core.windows.net/x")
+        == "abfss://c@a.dfs.core.windows.net/x"
+    )
 
 
 # The user delegation key.
@@ -476,3 +496,62 @@ async def test_user_delegation_key_is_renewed_near_its_expiry() -> None:
 async def test_user_delegation_key_needs_a_token_credential() -> None:
     with pytest.raises(ValueError, match="token credential"):
         await _keyed(_SAS)._get_user_delegation_key()
+
+
+# Live accounts.
+
+
+@pytest.mark.live_only
+@pytest.mark.parametrize("mode", ["streaming", "server-side"])
+async def test_copy_between_live_accounts(api: str, mode: str) -> None:
+    # From the account with a hierarchical namespace to the one without, both
+    # by Microsoft Entra ID. On the server, the identity asks the source account
+    # for a user delegation key, which needs a role at its level.
+    from azure.identity.aio import DefaultAzureCredential  # noqa: PLC0415
+
+    hns = os.environ.get("FSSPEC_ABFS_TEST_HNS_ACCOUNT_URL")
+    flat = os.environ.get("FSSPEC_ABFS_TEST_FLAT_ACCOUNT_URL")
+    container = os.environ.get("FSSPEC_ABFS_TEST_CONTAINER")
+    if not (hns and flat and container):
+        pytest.skip("A copy between accounts needs both live accounts")
+
+    folder = f"fsspec-abfs-test-{uuid.uuid4().hex[:8]}/router-{mode}"
+    source, destination = (
+        hadoop_url(container, folder, *parse_account_url(account))
+        for account in (hns, flat)
+    )
+    credential = DefaultAzureCredential()
+    fs = AbfsFileSystems(
+        credential=credential,
+        cross_account_copy=mode,
+        asynchronous=True,
+        skip_instance_cache=True,
+    )
+    try:
+        await fs._pipe(
+            {f"{source}/d/x.txt": b"x", f"{source}/d/e/y.txt": b"y" * 100_000}
+        )
+        await fs._copy(f"{source}/d", f"{destination}/d", recursive=True)
+        assert await fs._find(destination) == [
+            f"{destination}/d/e/y.txt",
+            f"{destination}/d/x.txt",
+        ]
+        assert await fs._cat_file(f"{destination}/d/e/y.txt") == b"y" * 100_000
+
+        await fs._mv(f"{source}/d/x.txt", f"{destination}/moved.txt")
+        assert await fs._cat_file(f"{destination}/moved.txt") == b"x"
+        assert not await fs._exists(f"{source}/d/x.txt")
+    finally:
+        for path in (source, destination):
+            with contextlib.suppress(FileNotFoundError):
+                await fs._rm(path, recursive=True)
+        loop = asyncio.get_running_loop()
+        for inner in fs._backends.values():
+            # close() only schedules the closing of clients on the running loop: they are closed here.
+            if inner._client_loop is loop:
+                for client in (inner._blob_service_client, inner._dfs_service_client):
+                    await client.close()
+                inner._blob_service_client = inner._dfs_service_client = None
+                inner._client_loop = None
+        fs.close()
+        await credential.close()
