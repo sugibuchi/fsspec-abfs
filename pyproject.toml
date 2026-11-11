@@ -5,9 +5,7 @@ description = "An fsspec file system for Azure Data Lake Storage Gen2, on fsspec
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [
-    { name = "Tsuyoshi SUGIBUCHI", email = "sugibuchi@gmail.com" }
-]
+authors = [{ name = "Tsuyoshi SUGIBUCHI" }]
 keywords = ["fsspec", "filesystem", "azure", "adls", "data lake", "async"]
 classifiers = [
     "Development Status :: 3 - Alpha",
