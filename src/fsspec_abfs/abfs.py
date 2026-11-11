@@ -58,6 +58,7 @@ from ._paths import (
     AccountDomain,
     account_of,
     check_account,
+    hadoop_url,
     parse_account_url,
     split_stripped,
     strip_protocol,
@@ -212,11 +213,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
     Its paths are ``/<container>/<path>``, and its root, "/", lists the
     containers. It makes no container: a container is made by Azure's own
-    means. It takes ``abfs://`` and ``abfss://`` URLs, in adlfs' form,
-    ``abfs://<container>/<path>``, or Hadoop's,
-    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``. ``az://``
-    URLs are taken too. Its operations refuse a URL of another account: see
-    `split_path`.
+    means. It takes the URLs adlfs takes: Hadoop's,
+    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``, adlfs' own,
+    ``abfs://<container>/<path>`` or ``az://<container>/<path>``, both without
+    their protocol, and the endpoints', ``https://<account>.dfs...``. Its
+    operations refuse a URL of another account: see `split_path`.
+    `unstrip_protocol` gives a path's URL in Hadoop's form.
 
     The recursive methods are the tree strategies of fsspec-alt-strategies.
     Their storage profile follows the account: see `HNS_PROFILE`,
@@ -359,6 +361,17 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             )
         else:
             return split_stripped(strip_protocol(path))
+
+    def unstrip_protocol(self, name: str) -> str:
+        """A path's URL in Hadoop's form, ``abfss://<container>@<account>.dfs.<domain>/<path>``.
+
+        It is the form Spark and Hadoop's ABFS driver take, and names the
+        account, so it is a path's full name outside the filesystem. ``name`` is
+        a path or a URL of the filesystem's account. The root, which has no
+        container, is the account's dfs endpoint, as Hadoop's form needs one.
+        """
+        container, key = self.split_path(name)
+        return hadoop_url(container, key, self.account_name, self.account_domain)
 
     @staticmethod
     def _get_kwargs_from_urls(path: str) -> dict[str, Any]:

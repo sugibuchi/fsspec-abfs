@@ -1,14 +1,26 @@
-"""The accounts and paths of Azure Data Lake Storage Gen2.
+"""The accounts, URLs and paths of Azure Data Lake Storage Gen2.
 
 A path of the filesystem is ``/<container>/<path in container>``. The root,
-"/", holds the containers. `split_stripped` gives a stripped path's container and its path
-within it, without a leading "/": the blob API takes names so, and the Data Lake
-API answers differently to some requests when a leading "/" is given.
+"/", holds the containers. `split_stripped` gives a stripped path's container
+and its path within it, without a leading "/": the blob API takes names so, and
+the Data Lake API answers differently to some requests when a leading "/" is
+given.
 
 An account is its name and its domain: Azure's, ``core.windows.net``, or
 Fabric's OneLake, ``fabric.microsoft.com``. Both endpoints of an account name
 it, as they serve the same storage: ``https://<account>.dfs.<domain>`` and
 ``https://<account>.blob.<domain>``.
+
+`strip_protocol` takes the URLs adlfs takes:
+
+- Hadoop's, ``abfs[s]://<container>@<account>.dfs.<domain>/<path>``;
+- adlfs' own, ``az://``, ``abfs://`` or ``abfss://<container>/<path>``;
+- both without their protocol, ``<container>@<account>.dfs.<domain>/<path>`` and
+  ``<container>/<path>``, or ``/<container>/<path>``;
+- an endpoint's, ``https://<account>.dfs.<domain>/<container>/<path>``, or of
+  the blob endpoint.
+
+`hadoop_url` makes the first: the form Spark and Hadoop's ABFS driver take.
 """
 
 from __future__ import annotations
@@ -21,6 +33,7 @@ __all__ = [
     "AccountDomain",
     "account_of",
     "check_account",
+    "hadoop_url",
     "parse_account_url",
     "split_stripped",
     "strip_protocol",
@@ -32,24 +45,31 @@ AccountDomain = Literal["core.windows.net", "fabric.microsoft.com"]
 DEFAULT_DOMAIN: AccountDomain = "core.windows.net"
 """The domain of an account given by its name alone: Azure's."""
 
-_DOMAINS = r"core\.windows\.net|fabric\.microsoft\.com"
-
-_ACCOUNT_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+# Account names are lower case letters and digits, container names lower case
+# letters, digits and inner hyphens, as Azure names them.
+_ACCOUNT = r"(?P<account>[0-9a-z]+)"
+_DOMAIN = r"(?P<domain>core\.windows\.net|fabric\.microsoft\.com)"
+_CONTAINER = r"(?P<container>[0-9a-z]+(?:-[0-9a-z]+)*)"
+_PATH = r"(?P<path>/.*)?"
 
 _ACCOUNT_URL = re.compile(
-    rf"https://(?P<account>{_ACCOUNT_NAME.pattern})"
-    rf"\.(?P<service>dfs|blob)\.(?P<domain>{_DOMAINS})/?",
-    re.IGNORECASE,
+    rf"https://{_ACCOUNT}\.(?:dfs|blob)\.{_DOMAIN}/?", re.IGNORECASE
 )
+"""An account's endpoint, with no container: what ``account_url`` takes."""
 
-# The Hadoop form, "abfss://<container>@<account>.dfs.<domain>/<path>", and the
-# adlfs form, "abfs://<container>/<path>" or "az://<container>/<path>".
-_URL = re.compile(
-    rf"(?:abfss?|az)://(?P<container>[^/@]*)"
-    rf"(?:@(?P<account>[a-z0-9-]+)\.(?:dfs|blob)\.(?P<domain>{_DOMAINS}))?"
-    rf"(?P<path>/.*)?",
+_HADOOP_URL = re.compile(
+    rf"(?:abfss?://)?{_CONTAINER}@{_ACCOUNT}\.dfs\.{_DOMAIN}{_PATH}", re.IGNORECASE
+)
+"""Hadoop's URL, with its protocol or without."""
+
+_SERVICE_URL = re.compile(
+    rf"https://{_ACCOUNT}\.(?:dfs|blob)\.{_DOMAIN}(?:/(?:{_CONTAINER}{_PATH})?)?",
     re.IGNORECASE,
 )
+"""A URL of an endpoint, with a container and a path in it, or without."""
+
+_ADLFS_URL = re.compile(rf"(?:az|abfss?)://{_CONTAINER}?{_PATH}", re.IGNORECASE)
+"""adlfs' URL, naming no account."""
 
 
 def parse_account_url(account_url: str) -> tuple[str, AccountDomain]:
@@ -64,7 +84,8 @@ def parse_account_url(account_url: str) -> tuple[str, AccountDomain]:
             "account_url must be an account's dfs or blob endpoint, e.g. "
             f"https://<account>.dfs.core.windows.net/: {account_url!r}"
         )
-    return m.group("account").lower(), m.group("domain").lower()  # type: ignore[return-value]
+    else:
+        return m.group("account").lower(), m.group("domain").lower()  # type: ignore[return-value]
 
 
 def check_account(account_name: str, account_domain: str) -> tuple[str, AccountDomain]:
@@ -74,21 +95,31 @@ def check_account(account_name: str, account_domain: str) -> tuple[str, AccountD
     the filesystem takes.
     """
     name = account_name.strip().lower()
-    if not _ACCOUNT_NAME.fullmatch(name):
-        raise ValueError(f"Not an account name: {account_name!r}")
     domain = account_domain.strip().lower()
-    if not re.fullmatch(_DOMAINS, domain):
+    if not re.fullmatch(_ACCOUNT, name):
+        raise ValueError(f"Not an account name: {account_name!r}")
+    elif not re.fullmatch(_DOMAIN, domain):
         raise ValueError(
             "account_domain must be core.windows.net or fabric.microsoft.com: "
             f"{account_domain!r}"
         )
-    return name, domain  # type: ignore[return-value]
+    else:
+        return name, domain  # type: ignore[return-value]
+
+
+def _match(path: str) -> re.Match[str] | None:
+    """The URL a path is, of any form `strip_protocol` takes, or None for a plain path."""
+    for pattern in (_HADOOP_URL, _SERVICE_URL, _ADLFS_URL):
+        m = pattern.fullmatch(path)
+        if m is not None:
+            return m
+    return None
 
 
 def account_of(url: str) -> tuple[str, AccountDomain] | None:
-    """The account a Hadoop-style URL names, e.g. from ``abfss://c@a.dfs.core.windows.net/p``, or None."""
-    m = _URL.fullmatch(url.strip())
-    if m is None or m.group("account") is None:
+    """The account a URL names, as Hadoop's and the endpoints' do, or None."""
+    m = _match(url.strip())
+    if m is None or "account" not in m.re.groupindex:
         return None
     else:
         return m.group("account").lower(), m.group("domain").lower()  # type: ignore[return-value]
@@ -97,13 +128,13 @@ def account_of(url: str) -> tuple[str, AccountDomain] | None:
 def strip_protocol(path: str) -> str:
     """A path as the filesystem takes it: ``/<container>/<path>``, without protocol or account.
 
-    The account of a Hadoop-style URL is left out here: the filesystem's
-    operations check it is its own, see `AbfsFileSystem.split_path`.
+    The account a URL names is left out here: the filesystem's operations check
+    it is its own, see `AbfsFileSystem.split_path`.
     """
     path = path.strip()
-    m = _URL.fullmatch(path)
+    m = _match(path)
     if m is not None:
-        path = m.group("container") + (m.group("path") or "")
+        path = (m.group("container") or "") + (m.group("path") or "")
     return "/" + path.strip("/")
 
 
@@ -111,3 +142,16 @@ def split_stripped(path: str) -> tuple[str, str]:
     """A stripped path's container and the path within it, each "" if none."""
     container, _, key = path.strip("/").partition("/")
     return container, key.strip("/")
+
+
+def hadoop_url(container: str, key: str, account: str, domain: str) -> str:
+    """The URL of a path in Hadoop's form, ``abfss://<container>@<account>.dfs.<domain>/<path>``.
+
+    The root, which has no container, is the account's dfs endpoint, as Hadoop's
+    form needs a container.
+    """
+    host = f"{account}.dfs.{domain}"
+    if not container:
+        return f"https://{host}/"
+    else:
+        return f"abfss://{container}@{host}/{key}"

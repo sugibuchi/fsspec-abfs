@@ -108,23 +108,72 @@ def test_cached_by_account_however_given() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "stripped"),
+    ("path", "stripped", "account"),
     [
-        ("abfs://c/a/b", "/c/a/b"),
-        ("abfss://c/a/b/", "/c/a/b"),
-        ("az://c", "/c"),
-        ("abfss://c@acc.dfs.core.windows.net/a/b", "/c/a/b"),
-        ("abfs://c@acc.dfs.fabric.microsoft.com", "/c"),
-        ("/c/a", "/c/a"),
-        ("c/a", "/c/a"),
-        ("abfs://", "/"),
-        ("/", "/"),
-        ("", "/"),
+        # adlfs' own form.
+        ("abfs://c/a/b", "/c/a/b", None),
+        ("abfss://c/a/b/", "/c/a/b", None),
+        ("az://my-c/a", "/my-c/a", None),
+        ("az://c", "/c", None),
+        ("abfs://", "/", None),
+        # Hadoop's, with its protocol or without.
+        (
+            "abfss://c@acc.dfs.core.windows.net/a/b",
+            "/c/a/b",
+            ("acc", "core.windows.net"),
+        ),
+        (
+            "abfs://c@acc.dfs.fabric.microsoft.com",
+            "/c",
+            ("acc", "fabric.microsoft.com"),
+        ),
+        ("c@acc.dfs.core.windows.net/a", "/c/a", ("acc", "core.windows.net")),
+        # An endpoint's, dfs or blob.
+        (
+            "https://acc.dfs.core.windows.net/c/a/b",
+            "/c/a/b",
+            ("acc", "core.windows.net"),
+        ),
+        ("https://acc.blob.core.windows.net/c", "/c", ("acc", "core.windows.net")),
+        ("https://acc.dfs.fabric.microsoft.com/", "/", ("acc", "fabric.microsoft.com")),
+        # Plain paths.
+        ("/c/a", "/c/a", None),
+        ("c/a", "/c/a", None),
+        ("/", "/", None),
+        ("", "/", None),
     ],
 )
-def test_strip_protocol(path: str, stripped: str) -> None:
+def test_strip_protocol(path: str, stripped: str, account: tuple | None) -> None:
     assert strip_protocol(path) == stripped
     assert AbfsFileSystem._strip_protocol(path) == stripped
+    assert account_of(path) == account
+
+
+@pytest.mark.parametrize(
+    ("path", "url"),
+    [
+        ("/c/a/b", "abfss://c@acc.dfs.core.windows.net/a/b"),
+        ("abfs://c/a", "abfss://c@acc.dfs.core.windows.net/a"),
+        (
+            "https://acc.blob.core.windows.net/c/a",
+            "abfss://c@acc.dfs.core.windows.net/a",
+        ),
+        ("/c", "abfss://c@acc.dfs.core.windows.net/"),
+        ("/", "https://acc.dfs.core.windows.net/"),
+    ],
+)
+def test_unstrip_protocol(path: str, url: str) -> None:
+    fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
+    assert fs.unstrip_protocol(path) == url
+    # Hadoop's form strips back to the path, of the same account.
+    assert fs._strip_protocol(url) == fs._strip_protocol(path)
+    assert account_of(url) == ("acc", "core.windows.net")
+
+
+def test_unstrip_protocol_of_another_account_is_refused() -> None:
+    fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
+    with pytest.raises(ValueError, match="not of this filesystem's"):
+        fs.unstrip_protocol("https://other.dfs.core.windows.net/c/a")
 
 
 @pytest.mark.parametrize(
@@ -147,6 +196,8 @@ def test_paths_of_another_account_are_refused() -> None:
     for url in (
         "abfss://c@other.dfs.core.windows.net/a",
         "abfss://c@acc.dfs.fabric.microsoft.com/a",
+        "c@other.dfs.core.windows.net/a",
+        "https://other.blob.core.windows.net/c/a",
     ):
         # Stripping is fsspec's convention, and knows no account.
         assert fs._strip_protocol(url) == "/c/a"
