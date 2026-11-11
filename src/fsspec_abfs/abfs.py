@@ -589,10 +589,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 listed = True
                 yield entry
         except AzureError as e:
-            if listed or not container:
+            # A file lists as itself, as fsspec's _ls lists it: a Data Lake
+            # listing of a file fails. Anything else raises the listing's error.
+            entry = None if listed or not container else await self._info(path)
+            if entry is None or entry["type"] == "directory":
                 raise os_error(e, path) from e
-            # A file lists as itself, as fsspec's _ls lists it.
-            yield await self._file_itself(path, e)
+            yield entry
             return
 
         if not listed and container:
@@ -600,13 +602,6 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             entry = await self._info(path)
             if entry["type"] != "directory":
                 yield entry
-
-    async def _file_itself(self, path: str, error: AzureError) -> dict[str, Any]:
-        """The entry of a file whose listing failed, as fsspec's _ls lists a file; else the listing's error."""
-        entry = await self._info(path)
-        if entry["type"] == "directory":
-            raise os_error(error, path) from error
-        return entry
 
     async def _ils_containers(self, recursive: bool) -> AsyncIterator[dict[str, Any]]:
         """The containers at the root, each followed by all in it when ``recursive``: depth first."""
