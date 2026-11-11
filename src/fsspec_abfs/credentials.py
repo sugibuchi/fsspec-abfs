@@ -70,7 +70,7 @@ class StorageCredential:
 
         Parameters
         ----------
-        credential : AsyncTokenCredential, str or None
+        credential : AsyncTokenCredential or str
             One of:
 
             - an async token credential, used as it is;
@@ -80,7 +80,7 @@ class StorageCredential:
             - a SAS token, with or without its leading "?";
             - an account's shared key.
 
-            None is anonymous.
+            None is refused: "anonymous" says that no credential is sent.
         **options
             The options of a file system, e.g. its ``storage_options``. A token
             credential a keyword or a class name names takes those its
@@ -100,13 +100,13 @@ class StorageCredential:
         if isinstance(credential, AsyncTokenCredential):
             return cls("TokenCredential", credential)
 
-        if credential is None or credential == _ANONYMOUS:
+        if credential == _ANONYMOUS:
             return cls("Anonymous", None)
 
         if not isinstance(credential, str):
             raise TypeError(
                 "credential must be an async token credential or a str, not"
-                f" {type(credential).__name__}: the service clients are async"
+                f' {type(credential).__name__}: e.g. "anonymous" for no credential'
             )
 
         if credential in TOKEN_CREDENTIALS or _is_class_name(credential):

@@ -40,7 +40,7 @@ uv add fsspec-abfs
 ```python
 from fsspec_abfs import AbfsFileSystem
 
-fs = AbfsFileSystem(account_name="myaccount", credential="default")
+fs = AbfsFileSystem(account_name="myaccount")
 
 fs.ls("/mycontainer/data")
 
@@ -54,10 +54,7 @@ account needs no `account_name`:
 ```python
 import pandas as pd
 
-df = pd.read_parquet(
-    "abfss://mycontainer@myaccount.dfs.core.windows.net/data/table.parquet",
-    storage_options={"credential": "default"},
-)
+df = pd.read_parquet("abfss://mycontainer@myaccount.dfs.core.windows.net/data/table.parquet")
 ```
 
 See [USAGE.md](https://github.com/sugibuchi/fsspec-abfs/blob/main/USAGE.md) for options, authentication and each

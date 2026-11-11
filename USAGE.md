@@ -9,7 +9,7 @@ For installation, see [README.md](README.md).
 ```python
 from fsspec_abfs import AbfsFileSystem
 
-fs = AbfsFileSystem(account_name="myaccount", credential="default")
+fs = AbfsFileSystem(account_name="myaccount")
 ```
 
 Or through fsspec, for the `abfs` and `abfss` protocols:
@@ -17,7 +17,7 @@ Or through fsspec, for the `abfs` and `abfss` protocols:
 ```python
 import fsspec
 
-fs = fsspec.filesystem("abfss", account_name="myaccount", credential="default")
+fs = fsspec.filesystem("abfss", account_name="myaccount")
 ```
 
 A file system works on one account. fsspec caches one per account, credential and options, however the account is
@@ -32,7 +32,7 @@ All are keyword arguments:
 | `account_name`          | The account's name, e.g. `myaccount`.                                               | `None`               |
 | `account_domain`        | `"core.windows.net"` for Azure, or `"fabric.microsoft.com"` for Fabric's OneLake.   | `"core.windows.net"` |
 | `account_url`           | The account's endpoint, in place of `account_name` and `account_domain`.            | `None`               |
-| `credential`            | How to authenticate: see [Authentication](#authentication).                         | `None`, anonymous    |
+| `credential`            | How to authenticate: see [Authentication](#authentication).                         | `"default"`          |
 | `is_hns_enabled`        | Whether the account has a hierarchical namespace. `None` asks the account.          | `None`               |
 | `operation_concurrency` | Maximum concurrent requests of a recursive operation, such as `rm` or `copy`.       | `100`                |
 | `io_concurrency`        | Maximum concurrent range reads and block uploads, shared by all the files opened.   | `16`                 |
@@ -84,7 +84,9 @@ with monitoring(LoggingMonitor(logger, level=logging.INFO)):
 - the full name of an async token credential class, e.g. `"azure.identity.aio.AzureCliCredential"`;
 - a SAS token, with or without its leading `?`;
 - an account's shared key;
-- `None` or `"anonymous"`, for public containers.
+- `"anonymous"`, sending no credential, for public containers.
+
+The default, `"default"`, is `DefaultAzureCredential`. `None` is refused.
 
 | Keyword               | Credential                    |
 |-----------------------|-------------------------------|

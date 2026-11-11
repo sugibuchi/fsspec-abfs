@@ -231,11 +231,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     ----------
     account_name : str, optional
         The account's name, e.g. ``myaccount``.
-    credential : AsyncTokenCredential or str, optional
+    credential : AsyncTokenCredential or str, default "default"
         An async token credential, or a string naming one, a SAS token or a
-        shared key, as `StorageCredential.from_credential` reads it. None is
-        anonymous. A token credential given is the caller's to close. One made
-        from a string is the file system's, closed by `close`.
+        shared key, as `StorageCredential.from_credential` reads it. The
+        default is ``DefaultAzureCredential``, and "anonymous" sends none. A
+        token credential given is the caller's to close. One made from a
+        string is the file system's, closed by `close`.
     account_domain : {"core.windows.net", "fabric.microsoft.com"}, optional
         The account's domain: Azure's, the default, or Fabric OneLake's.
     account_url : str, optional
@@ -261,6 +262,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         If no account is given, or it is given both ways, or ``account_url`` is
         no account endpoint, or ``account_name`` or ``account_domain`` is none
         Azure takes.
+    TypeError
+        If ``credential`` is neither an async token credential nor a string,
+        e.g. None.
 
     Examples
     --------
@@ -297,7 +301,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         self,
         *,
         account_name: str | None = None,
-        credential: Any = None,
+        credential: Any = "default",
         account_domain: AccountDomain | None = None,
         account_url: str | None = None,
         is_hns_enabled: bool | None = None,

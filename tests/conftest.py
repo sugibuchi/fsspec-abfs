@@ -182,7 +182,8 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
     is an error, not a skip that would pass unseen.
     """
     made: list[AbfsFileSystem] = []
-    credential = None
+    # The dummy needs no credential, and the SDK sends no token over plain HTTP.
+    credential: Any = "anonymous"
     if api == "dummy":
         request.getfixturevalue("dummy")
         # An account by its name, as the constructor takes, with the dummy's endpoints.
@@ -230,7 +231,7 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
                 fs._blob_service_client = fs._dfs_service_client = None
                 fs._client_loop = None
             fs.close()
-        if credential is not None:
+        if not isinstance(credential, str):
             await credential.close()
 
 

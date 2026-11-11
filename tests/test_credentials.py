@@ -22,11 +22,15 @@ async def test_a_token_credential_is_used_as_it_is() -> None:
     await token.close()
 
 
-@pytest.mark.parametrize("value", [None, "anonymous"])
-def test_anonymous(value: str | None) -> None:
-    assert StorageCredential.from_credential(value) == StorageCredential(
+def test_anonymous() -> None:
+    assert StorageCredential.from_credential("anonymous") == StorageCredential(
         "Anonymous", None
     )
+
+
+def test_none_is_refused() -> None:
+    with pytest.raises(TypeError, match="anonymous"):
+        StorageCredential.from_credential(None)
 
 
 async def test_a_keyword_makes_its_class_with_the_arguments() -> None:
