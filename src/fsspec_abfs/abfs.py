@@ -320,7 +320,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             self.storage_credential.kind == "TokenCredential"
             and self.storage_credential.value is not credential
         )
-        # Declared, or set once `_hns` asks: the storage profile follows it. Until
+        # Declared, or set once `_check_hns_enabled` asks: the storage profile follows it. Until
         # loaded, it is the declared account's profile, or the unknown one's.
         self._is_hns_enabled: bool | None = is_hns_enabled
         self.storage_profile = _PROFILES[is_hns_enabled]
@@ -468,16 +468,16 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         return self._is_hns_enabled
 
     async def _load_storage_profile(self, path: str) -> StorageProfile:
-        """The profile of the account, asked at the container of ``path``: see `_hns`.
+        """The profile of the account, asked at the container of ``path``: see `_check_hns_enabled`.
 
         The account is one namespace, so one profile fits the filesystem. The
         base class loads it once, with the paths of the first operation needing
         it, and keeps it as ``storage_profile``. If the account must be asked,
         the container's root ACL is a probe a container's SAS or role is allowed.
         """
-        return _PROFILES[await self._hns(self.split_path(path)[0])]
+        return _PROFILES[await self._check_hns_enabled(self.split_path(path)[0])]
 
-    async def _hns(self, container: str) -> bool | None:
+    async def _check_hns_enabled(self, container: str) -> bool | None:
         """Whether the account has a hierarchical namespace: True, False, or None if unsure.
 
         Awaited by `_load_storage_profile`, once per filesystem.
@@ -534,7 +534,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         return None
 
     async def _first_container(self) -> str:
-        """The first container listed, whose root ACL `_hns` may ask, or "" if none can be listed."""
+        """The first container listed, whose root ACL `_check_hns_enabled` may ask, or "" if none can be listed."""
         try:
             async for c in self._blob_service().list_containers(results_per_page=1):
                 return c.name

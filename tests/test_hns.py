@@ -41,13 +41,13 @@ async def test_profile_asked_once(dummy, make_fs, hns) -> None:
 
 async def test_probe(make_fs, root, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns(root.partition("/")[0]) is hns
+    assert await fs._check_hns_enabled(root.split("/")[1]) is hns
 
 
 async def test_account_information(dummy, make_fs, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("c") is hns
-    assert await fs._hns("c") is hns
+    assert await fs._check_hns_enabled("c") is hns
+    assert await fs._check_hns_enabled("c") is hns
     assert dummy.operations() == ["GetAccountInformation"]
 
 
@@ -55,7 +55,7 @@ async def test_root_acl(dummy, make_fs, hns) -> None:
     # Without HNS, the Data Lake API refuses: HierarchicalNamespaceNotEnabled.
     dummy.failures["GetAccountInformation"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("c") is hns
+    assert await fs._check_hns_enabled("c") is hns
     assert dummy.operations() == ["GetAccountInformation", "GetAccessControl"]
 
 
@@ -73,7 +73,7 @@ async def test_root_acl_unsupported_features(dummy, make_fs) -> None:
     dummy.failures["GetAccountInformation"] = _REFUSED
     dummy.failures["GetAccessControl"] = (409, "EndpointUnsupportedAccountFeatures")
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("c") is False
+    assert await fs._check_hns_enabled("c") is False
     assert fs.is_hns_enabled is False
 
 
@@ -99,7 +99,7 @@ async def test_no_container_asks_the_first_listed(dummy, make_fs, hns) -> None:
     # An operation at the root names no container: the first listed is asked.
     dummy.failures["GetAccountInformation"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("") is hns
+    assert await fs._check_hns_enabled("") is hns
     assert dummy.count("GetAccessControl") == 1
 
 
@@ -107,7 +107,7 @@ async def test_no_container_to_ask(dummy, make_fs) -> None:
     dummy.failures["GetAccountInformation"] = _REFUSED
     dummy.failures["ListContainers"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._hns("") is None
+    assert await fs._check_hns_enabled("") is None
     assert dummy.count("GetAccessControl") == 0
 
 
