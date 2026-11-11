@@ -338,6 +338,9 @@ credential object given is the caller's to close.
 | `_mv_file`, `_mv_tree` | Rename Path, into any container of the account | Copy Blob, then Delete Blob                    |
 | `_cat_file`            | Get Blob                                       | Get Blob                                       |
 
+A rename into another container passes a SAS again, in the new name, as the SDK holds it in the source's URL only.
+Anonymous, the SDK sends no such rename, so `_mv_file` raises `PermissionError` first.
+
 While the namespace is unknown, `_makedirs` writes a blob with the metadata `hdi_isfolder=true`: a real folder with a
 hierarchical namespace, a marker blob without one. The listings take both as folders.
 
