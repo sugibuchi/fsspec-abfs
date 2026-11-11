@@ -714,10 +714,15 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         file_system = self._dfs_service().get_file_system_client(container)
         async for p in file_system.get_paths(path=key or None, recursive=recursive):
             name = f"/{container}/{p.name}"
+            # The Data Lake SDK gives a time of no zone, in UTC: the blob API's
+            # are aware, so the entries of both compare.
+            modified = p.last_modified
+            if modified is not None and modified.tzinfo is None:
+                modified = modified.replace(tzinfo=UTC)
             if p.is_directory:
                 yield {
                     **_folder_entry(name),
-                    "last_modified": p.last_modified,
+                    "last_modified": modified,
                     "etag": p.etag,
                 }
             else:
@@ -725,7 +730,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                     "name": name,
                     "size": p.content_length,
                     "type": "file",
-                    "last_modified": p.last_modified,
+                    "last_modified": modified,
                     "etag": p.etag,
                 }
 

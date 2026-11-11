@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import os
+from datetime import timedelta
 
 import pytest
 
@@ -487,3 +488,14 @@ async def test_containers(dummy, fs, hns) -> None:
 async def test_no_listings_cache(make_fs) -> None:
     # Other clients change the storage too: no listing is ever cached.
     assert make_fs().dircache.use_listings_cache is False
+
+
+async def test_last_modified_is_in_utc(fs, root) -> None:
+    # The Data Lake API's listings, as the blob API's, give aware times, in UTC.
+    # A folder that is only a prefix has none.
+    await fs._pipe_file(f"{root}/d/x.txt", b"x")
+    entries = [*await fs._ls(f"{root}/d"), *await fs._ls(root)]
+    entries.append(await fs._info(f"{root}/d/x.txt"))
+    times = [e["last_modified"] for e in entries if "last_modified" in e]
+    assert len(times) >= 2
+    assert {t.utcoffset() for t in times} == {timedelta(0)}

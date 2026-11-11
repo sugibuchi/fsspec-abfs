@@ -285,12 +285,12 @@ fs.ls("abfss://raw@myaccount.dfs.core.windows.net/data")
 # [{'name': 'abfss://raw@myaccount.dfs.core.windows.net/data/2026',
 #   'size': 0,
 #   'type': 'directory',
-#   'last_modified': datetime.datetime(2026, 11, 11, 22, 57, 2),
+#   'last_modified': datetime.datetime(2026, 11, 11, 22, 57, 2, tzinfo=datetime.timezone.utc),
 #   'etag': '0x8DF404719C8BD14'},
 #  {'name': 'abfss://raw@myaccount.dfs.core.windows.net/data/readme.txt',
 #   'size': 1024,
 #   'type': 'file',
-#   'last_modified': datetime.datetime(2026, 11, 11, 22, 57, 2),
+#   'last_modified': datetime.datetime(2026, 11, 11, 22, 57, 2, tzinfo=datetime.timezone.utc),
 #   'etag': '0x8DF404719C7F8C4'}]
 
 fs.ls("abfss://raw@myaccount.dfs.core.windows.net/data", detail=False)
