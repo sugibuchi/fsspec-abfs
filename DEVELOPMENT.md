@@ -302,10 +302,10 @@ arguments, and unpickling calls the constructor again:
 
 | Module               | Holds                                                                             |
 |----------------------|-----------------------------------------------------------------------------------|
-| `abfs.py`            | `AbfsFileSystem`, its three storage profiles, and its file objects                |
+| `abfs.py`            | `AbfsFileSystem`, its profiles, file objects, and user delegation keys            |
 | `_paths.py`          | The accounts, URLs and paths, as regular expressions                              |
 | `credentials.py`     | `StorageCredential`: what each value passed as a credential gives                 |
-| `routing.py`         | `AbfsFileSystems`, and `get_user_delegation_key`                                  |
+| `routing.py`         | `AbfsFileSystems`                                                                 |
 | `_errors.py`         | Azure's errors as `OSError`s                                                      |
 | `_listing.py`        | The blob API's recursive listing, a page asked for while the last one is parsed   |
 | `_contrib/strategy/` | The copy of fsspec-alt-strategies                                                 |

@@ -16,7 +16,8 @@ from azure.core.credentials import AccessToken
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.storage.blob import UserDelegationKey
 
-from fsspec_abfs.routing import AbfsFileSystems, get_user_delegation_key
+from fsspec_abfs.abfs import AbfsFileSystem
+from fsspec_abfs.routing import AbfsFileSystems
 
 _SAS = "sv=2025-01-05&ss=b&srt=sco&sp=rwdl&sig=c2ln"
 """A SAS token in its form, which the dummy takes without checking it."""
@@ -129,7 +130,7 @@ def test_strip_protocol_keeps_the_url() -> None:
     ],
 )
 def test_refuses_any_other_path(path: str) -> None:
-    with pytest.raises(ValueError, match="Hadoop's URLs only"):
+    with pytest.raises(ValueError, match="Not a Hadoop URL"):
         AbfsFileSystems._strip_protocol(path)
 
 
@@ -225,7 +226,7 @@ def test_a_closed_router_refuses_calls() -> None:
             [{"account_name": "a"}, {"account_url": "https://a.blob.core.windows.net"}],
             "given twice",
         ),
-        ([{"is_hns_enabled": True}], "names its account"),
+        ([{"is_hns_enabled": True}], "account is required"),
         (
             [{"account_name": "a", "account_url": "https://a.dfs.core.windows.net"}],
             "not both",
@@ -303,7 +304,7 @@ async def test_move_between_accounts(dummy, make_router) -> None:
     assert "x.txt" not in dummy.files("c")
 
 
-# The source's URL of a copy on the server.
+# The source's URL of a copy on the server, signed by its account's file system.
 
 
 def _delegation_key(expiry: datetime) -> UserDelegationKey:
@@ -318,46 +319,43 @@ def _delegation_key(expiry: datetime) -> UserDelegationKey:
     return key
 
 
-async def test_source_url(make_router) -> None:
+async def test_readable_url(make_router) -> None:
     fs = make_router({"a": _SAS, "b": _KEY})
     # The source's own SAS, in its client's URL.
-    assert (await fs._source_url(fs.filesystem("a"), "/c/x.txt")).endswith(
+    assert (await fs.filesystem("a")._readable_url("/c/x.txt")).endswith(
         f"/c/x.txt?{_SAS}"
     )
     # A SAS signed with the account key.
-    assert (
-        "sig="
-        in (await fs._source_url(fs.filesystem("b"), "/c/x.txt")).partition("?")[2]
-    )
-
-    token = AbfsFileSystems(credential=_Token(), skip_instance_cache=True).filesystem(
-        "t"
-    )
-    # A user delegation SAS, by the key kept: no request.
-    token._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(days=1))
-    query = (await fs._source_url(token, "/c/x.txt")).partition("?")[2]
-    assert "skoid=" in query
+    query = (await fs.filesystem("b")._readable_url("/c/x.txt")).partition("?")[2]
+    assert "sig=" in query
     assert "sp=r" in query
 
+    token = _keyed()
+    # A user delegation SAS, by the key kept: no request.
+    token._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(days=1))
+    query = (await token._readable_url("/c/x.txt")).partition("?")[2]
+    assert "skoid=" in query
+    assert "sp=r" in query
+    assert token.asked == []
 
-async def test_anonymous_source_url(make_router) -> None:
+
+async def test_anonymous_readable_url(make_router) -> None:
     fs = make_router()
-    assert "?" not in await fs._source_url(fs.filesystem("a"), "/c/x.txt")
+    assert "?" not in await fs.filesystem("a")._readable_url("/c/x.txt")
 
 
 # The user delegation key.
 
 
-def _keyed(kind: str = "TokenCredential") -> Any:
-    """An account's file system, as far as `get_user_delegation_key` reads it, counting its requests."""
-    fs = SimpleNamespace(
-        credential=SimpleNamespace(kind=kind),
+def _keyed(credential: Any = None) -> AbfsFileSystem:
+    """An account's file system whose blob service answers user delegation keys, counting its requests in ``asked``."""
+    fs = AbfsFileSystem(
         account_name="a",
-        account_domain="core.windows.net",
-        _user_delegation_key=None,
-        _user_delegation_lock=asyncio.Lock(),
-        asked=[],
+        credential=credential or _Token(),
+        asynchronous=True,
+        skip_instance_cache=True,
     )
+    fs.asked = []
 
     async def ask(
         key_start_time: datetime, key_expiry_time: datetime
@@ -366,28 +364,32 @@ def _keyed(kind: str = "TokenCredential") -> Any:
         fs.asked.append((key_start_time, key_expiry_time))
         return _delegation_key(key_expiry_time)
 
-    fs._blob_service = lambda: SimpleNamespace(get_user_delegation_key=ask)
+    service = fs._blob_service
+    # The blob clients are the real ones, which name the blob's URL without a request.
+    fs._blob_service = lambda: SimpleNamespace(
+        get_user_delegation_key=ask, get_blob_client=service().get_blob_client
+    )
     return fs
 
 
 async def test_user_delegation_key_is_kept() -> None:
     fs = _keyed()
-    keys = await asyncio.gather(*(get_user_delegation_key(fs) for _ in range(5)))
+    keys = await asyncio.gather(*(fs._get_user_delegation_key() for _ in range(5)))
     # Concurrent callers wait for one request, and later ones take the key kept.
     assert len(fs.asked) == 1
     assert all(k is keys[0] for k in keys)
-    assert await get_user_delegation_key(fs) is keys[0]
+    assert await fs._get_user_delegation_key() is keys[0]
     start, expiry = fs.asked[0]
-    assert expiry - start == timedelta(days=1)
+    assert expiry - start == fs.user_delegation_key_lifetime
 
 
 async def test_user_delegation_key_is_renewed_near_its_expiry() -> None:
     fs = _keyed()
     fs._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(hours=1))
-    await get_user_delegation_key(fs)
+    await fs._get_user_delegation_key()
     assert len(fs.asked) == 1
 
 
 async def test_user_delegation_key_needs_a_token_credential() -> None:
     with pytest.raises(ValueError, match="token credential"):
-        await get_user_delegation_key(_keyed("SAS"))
+        await _keyed(_SAS)._get_user_delegation_key()

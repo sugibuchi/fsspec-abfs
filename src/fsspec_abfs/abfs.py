@@ -24,6 +24,7 @@ import errno
 import logging
 import sys
 import uuid
+from datetime import UTC, datetime, timedelta
 from io import UnsupportedOperation
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -35,10 +36,10 @@ from azure.core.exceptions import (
     ResourceModifiedError,
     ResourceNotFoundError,
 )
-from azure.storage.blob import BlobBlock
+from azure.storage.blob import BlobBlock, BlobSasPermissions, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.filedatalake.aio import DataLakeServiceClient
-from fsspec.asyn import sync
+from fsspec.asyn import sync, sync_wrapper
 from fsspec_alt_strategies.profile import StorageProfile
 
 from ._contrib.strategy.files.adaptive import (
@@ -68,6 +69,7 @@ from .credentials import StorageCredential
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from azure.storage.blob import UserDelegationKey
     from azure.storage.blob.aio import BlobClient
 
 
@@ -78,6 +80,7 @@ __all__ = [
     "AbfsFileSystem",
     "AbfsReadableFile",
     "AbfsWritableFile",
+    "resolve_account",
 ]
 
 logger = logging.getLogger(__name__)
@@ -137,6 +140,14 @@ _NO_HNS_CODES = frozenset(
 )
 
 _root_info = {"name": "/", "size": 0, "type": "directory"}
+
+_CLOCK_SKEW = timedelta(minutes=5)
+"""How far back a user delegation key and a SAS start, as the service's clock may run ahead of this one."""
+
+
+def _key_expiry(key: UserDelegationKey) -> datetime:
+    """A user delegation key's expiry: the SDK gives it as Azure's ISO 8601 text, in UTC."""
+    return datetime.fromisoformat(str(key.signed_expiry))
 
 
 def _is_folder_blob(metadata: dict[str, str] | None) -> bool:
@@ -218,22 +229,63 @@ class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
             # Refused before the account is checked, which would say it is missing.
             raise TypeError(f"{cls.__name__} takes keyword arguments only")
 
-        account_url = kwargs.get("account_url")
-        if account_url is not None:
-            if kwargs.get("account_name") or kwargs.get("account_domain"):
-                raise ValueError(
-                    "Give the account by account_url, or by account_name and "
-                    "account_domain: not both"
-                )
-            name, domain = parse_account_url(account_url)
-        elif kwargs.get("account_name"):
-            name, domain = check_account(
-                kwargs["account_name"], kwargs.get("account_domain") or DEFAULT_DOMAIN
+        kwargs["account_name"], kwargs["account_domain"] = resolve_account(
+            account_name=kwargs.get("account_name"),
+            account_domain=kwargs.get("account_domain"),
+            account_url=kwargs.get("account_url"),
+        )
+        return super().__call__(**kwargs)
+
+
+def resolve_account(
+    *,
+    account_name: str | None = None,
+    account_domain: str | None = None,
+    account_url: str | None = None,
+) -> tuple[str, AccountDomain]:
+    """The name and domain of the account given as `AbfsFileSystem` takes it, checked.
+
+    The account is ``account_name`` with an optional ``account_domain``, Azure's
+    by default, or else ``account_url``, an endpoint's URL: not both.
+
+    Parameters
+    ----------
+    account_name : str, optional
+        The account's name, e.g. ``myaccount``.
+    account_domain : {"core.windows.net", "fabric.microsoft.com"}, optional
+        The account's domain.
+    account_url : str, optional
+        The account's dfs or blob endpoint, e.g.
+        ``https://myaccount.dfs.core.windows.net/``.
+
+    Returns
+    -------
+    tuple of str
+        The name, in lower case, and the domain.
+
+    Raises
+    ------
+    ValueError
+        If no account is given, or it is given both ways, or the name, the
+        domain or the URL is none Azure takes.
+
+    Examples
+    --------
+    >>> resolve_account(account_url="https://MyAccount.blob.core.windows.net")
+    ('myaccount', 'core.windows.net')
+    """
+    if account_url is not None:
+        if account_name or account_domain:
+            raise ValueError(
+                "Give the account by account_url, or by account_name and "
+                "account_domain: not both"
             )
         else:
-            raise ValueError("The account is required: account_name, or account_url")
-        kwargs["account_name"], kwargs["account_domain"] = name, domain
-        return super().__call__(**kwargs)
+            return parse_account_url(account_url)
+    elif account_name:
+        return check_account(account_name, account_domain or DEFAULT_DOMAIN)
+    else:
+        raise ValueError("The account is required: account_name, or account_url")
 
 
 class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
@@ -326,6 +378,17 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     copy_poll_interval: float = 0.2
     """The first wait, in seconds, before checking a pending server-side copy. It doubles up to 5 s."""
 
+    user_delegation_key_lifetime: timedelta = timedelta(days=1)
+    """How long a user delegation key asked for is valid. Azure allows 7 days at most."""
+
+    user_delegation_key_margin: timedelta = timedelta(hours=12)
+    """How long a kept user delegation key must still be valid: else a new one is asked for.
+
+    A copy from another account reads its source while it runs, so the source's
+    SAS must outlive it. Each SAS is valid until its key expires, so at least as
+    long as this.
+    """
+
     def __init__(
         self,
         *,
@@ -357,7 +420,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         self._is_hns_enabled: bool | None = is_hns_enabled
         self.storage_profile = _PROFILES[is_hns_enabled]
 
-        # The user delegation key that `get_user_delegation_key` keeps, and
+        # The user delegation key that `_get_user_delegation_key` keeps, and
         # the lock asking for one at a time.
         self._user_delegation_key: Any = None
         self._user_delegation_lock = asyncio.Lock()
@@ -853,6 +916,94 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             raise os_error(e, path) from e
         if status != "success":
             raise OSError(errno.EIO, f"Copy from {source} ended as {status}", path)
+
+    # Signed URLs, for another account's copy.
+
+    async def _get_user_delegation_key(self) -> UserDelegationKey:
+        """The account's user delegation key, asked for once and kept until it nears its expiry.
+
+        A user delegation key signs SASs with the Microsoft Entra ID identity
+        of the credential. Asking for one needs the action
+        ``generateUserDelegationKey``, which Storage Blob Data Reader,
+        Contributor and Owner, and Storage Blob Delegator, give at the
+        account's level.
+
+        The key is asked for once, valid for `user_delegation_key_lifetime`,
+        and kept. A new one is asked for when the kept one has less than
+        `user_delegation_key_margin` left. Concurrent callers wait for one
+        request.
+
+        Returns
+        -------
+        azure.storage.blob.UserDelegationKey
+
+        Raises
+        ------
+        ValueError
+            If the credential is no token credential: only one can ask.
+        PermissionError
+            If the identity may not ask for a key, e.g. with a role on a
+            container only.
+        """
+        if self.credential.kind != "TokenCredential":
+            raise ValueError(
+                "A user delegation key needs a Microsoft Entra ID token credential,"
+                f" not {self.credential.kind}"
+            )
+
+        async with self._user_delegation_lock:
+            key = self._user_delegation_key
+            margin = self.user_delegation_key_margin
+            if key is None or _key_expiry(key) - datetime.now(UTC) < margin:
+                start = datetime.now(UTC) - _CLOCK_SKEW
+                with azure_errors(f"{self.account_name}.blob.{self.account_domain}"):
+                    key = await self._blob_service().get_user_delegation_key(
+                        key_start_time=start,
+                        key_expiry_time=start + self.user_delegation_key_lifetime,
+                    )
+                self._user_delegation_key = key
+            return key
+
+    get_user_delegation_key = sync_wrapper(_get_user_delegation_key)
+
+    async def _readable_url(self, path: str) -> str:
+        """A blob's URL, with what lets another account read it, by the credential.
+
+        - A token credential signs a user delegation SAS, by
+          `_get_user_delegation_key`.
+        - A shared key signs a SAS itself.
+        - A SAS is in the client's URL already.
+        - Anonymous, the URL carries nothing: the blob must be public.
+
+        A SAS signed here reads that blob only, and is valid until its key
+        expires, or as long as a key lives.
+        """
+        container, key = self.split_path(path)
+        url = self._blob(container, key).url
+        start = datetime.now(UTC) - _CLOCK_SKEW
+        if self.credential.kind == "TokenCredential":
+            delegation = await self._get_user_delegation_key()
+            signing = {
+                "user_delegation_key": delegation,
+                "expiry": _key_expiry(delegation),
+            }
+        elif self.credential.kind == "SharedKey":
+            signing = {
+                "account_key": self.credential.value,
+                "expiry": start + self.user_delegation_key_lifetime,
+            }
+        else:
+            return url
+
+        sas = generate_blob_sas(
+            self.account_name,
+            container,
+            key,
+            permission=BlobSasPermissions(read=True),
+            start=start,
+            **signing,
+        )
+        return f"{url}?{sas}"
 
     async def _cp_file_entry(
         self, entry: dict[str, Any], path2: str, **kwargs: Any

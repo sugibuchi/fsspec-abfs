@@ -158,7 +158,7 @@ def test_strip_protocol(path: str, stripped: str, account: tuple | None) -> None
             "https://acc.blob.core.windows.net/c/a",
             "abfss://c@acc.dfs.core.windows.net/a",
         ),
-        ("/c", "abfss://c@acc.dfs.core.windows.net/"),
+        ("/c", "abfss://c@acc.dfs.core.windows.net"),
     ],
 )
 def test_unstrip_protocol(path: str, url: str) -> None:

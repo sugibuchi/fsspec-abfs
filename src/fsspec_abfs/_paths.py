@@ -21,6 +21,8 @@ it, as they serve the same storage: ``https://<account>.dfs.<domain>`` and
   the blob endpoint.
 
 `hadoop_url` makes the first: the form Spark and Hadoop's ABFS driver take.
+`parse_hadoop_url` reads it back, with its protocol, as `AbfsFileSystems` takes
+it.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ __all__ = [
     "check_account",
     "hadoop_url",
     "parse_account_url",
+    "parse_hadoop_url",
     "split_stripped",
     "strip_protocol",
 ]
@@ -147,10 +150,34 @@ def split_stripped(path: str) -> tuple[str, str]:
 def hadoop_url(container: str, key: str, account: str, domain: str) -> str:
     """The URL of a path in Hadoop's form, ``abfss://<container>@<account>.dfs.<domain>/<path>``.
 
-    Raises ValueError for a path with no container, e.g. the root: Hadoop's form
-    has none for it.
+    A container's root has no trailing "/", as fsspec names a directory.
+    Raises ValueError for a path with no container, e.g. the root: Hadoop's
+    form has none for it.
     """
     if not container:
         raise ValueError("A path of no container has no URL in Hadoop's form")
     else:
-        return f"abfss://{container}@{account}.dfs.{domain}/{key}"
+        return f"abfss://{container}@{account}.dfs.{domain}" + (
+            f"/{key}" if key else ""
+        )
+
+
+def parse_hadoop_url(url: str) -> tuple[str, AccountDomain, str, str]:
+    """A Hadoop URL's account, domain, container and path in the container, as `hadoop_url` takes them.
+
+    The URL must carry its protocol, ``abfss://`` or ``abfs://``. The names are
+    in lower case, as Azure takes them, and the path has no "/" around it.
+    Raises ValueError for any other path.
+    """
+    m = _HADOOP_URL.fullmatch(url.strip())
+    if m is None or not re.match(r"abfss?://", url.strip(), re.IGNORECASE):
+        raise ValueError(
+            f"Not a Hadoop URL, abfss://<container>@<account>.dfs.<domain>/<path>: {url!r}"
+        )
+    else:
+        return (
+            m.group("account").lower(),
+            m.group("domain").lower(),  # type: ignore[return-value]
+            m.group("container").lower(),
+            (m.group("path") or "").strip("/"),
+        )
