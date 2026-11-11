@@ -137,6 +137,183 @@ Only live tests check what the dummy assumes, and what it does not model:
 - authentication, SAS tokens and roles, and the probe refused by them;
 - the latency, throttling and retries of a real service.
 
+## Design
+
+### One file system per account
+
+`AbfsFileSystem` works on one storage account. Its paths are `/<container>/<path>`, and its root lists the
+containers.
+
+- The account is given by `account_name` and `account_domain`, or by `account_url`. Both make the same cache key, so
+  fsspec caches one file system per account however it is named.
+- A URL naming another account is refused, as the file system would otherwise act on its own path of that name.
+- No container is made. Containers are made by Azure's own means, with their settings, e.g. their access level.
+
+### Strategies from fsspec-alt-strategies
+
+The recursive operations and the file objects come from
+[fsspec-alt-strategies](https://github.com/sugibuchi/fsspec-alt-strategies), a library of filesystem-independent
+strategies for fsspec. `AbfsFileSystem` implements only the primitives of Azure's APIs, and the library does the rest:
+
+- **Tree strategies:** `AbfsFileSystem` subclasses `TreeFileSystem`, as both APIs list one folder per request, or a
+  whole subtree by one recursive listing. `find`, `du`, `glob`, `rm`, `copy` and `mv` act on files while the listing
+  goes on.
+- **Storage profiles:** what the account does is declared in a `StorageProfile`, which follows the hierarchical
+  namespace. The strategies then skip the requests it makes needless.
+- **File objects:** files are adaptive files, whose blocks grow with sequential access. Transactions hold a file's
+  last request back until fsspec's transaction commits.
+- **Monitors:** the operations behind fsspec's methods report their progress to the monitors of the interface
+  package, and can be cancelled.
+
+The strategies are copied into the package rather than installed, so that a release of the library never changes this
+package's behaviour. Their shared interface, `fsspec-alt-strategies`, is installed.
+[The copy of fsspec-alt-strategies](#the-copy-of-fsspec-alt-strategies) says how the copy is kept.
+
+### Two APIs of one account
+
+Every account serves two APIs over the same storage, on two endpoints:
+
+- the blob API, for what both kinds of account answer alike: a path's properties, deletions, server-side copies, and
+  the files' data;
+- the Data Lake API, for what only an account with a hierarchical namespace has: real folders, listings of one
+  folder, atomic renames and recursive deletes.
+
+Whether the account has a hierarchical namespace is declared by `is_hns_enabled`, or asked once. While it is unknown,
+the file system takes the way right on both kinds: the blob API, and moves by copy and delete.
+
+### Fewer requests
+
+Each primitive sends as few requests as the account allows:
+
+- `cat_file` downloads a file in one request, with no properties read first.
+- `info` reads a blob's properties, and lists a prefix only on an account without a hierarchical namespace.
+- With a hierarchical namespace, a move is one rename, and a recursive delete one request.
+- A recursive listing of the blob API asks for each next page while the last one is parsed.
+
+### Standard exceptions
+
+Errors are `OSError` subclasses, as from local files. Azure's errors are mapped by their error code first, then by
+their HTTP status, as the two APIs name the same failure differently. A message keeps the error's type, status and
+code only: Azure's own messages may quote request URLs, with a SAS token in them.
+
+### Picklable
+
+File systems are pickled to run in other processes, e.g. by Dask. fsspec pickles a file system as its constructor
+arguments, and unpickling calls the constructor again:
+
+- the clients are not pickled, and are made again on first use;
+- a credential given as a string is made again;
+- a credential object must be picklable itself.
+
+### Known limits
+
+- **Renames stay within a container.** A file moved between two containers is copied, then deleted. A folder moved
+  between two raises `OSError` with `EXDEV`, before anything is copied.
+- **Recursive methods do not check a URL's account.** They strip it before any primitive sees it.
+  `test_recursive_methods_refuse_another_account` marks the gap as an expected failure.
+- **No append or update modes.** `ab` and `r+b` are refused.
+- **No listing cache.** Each call reaches the account.
+- **`az://` is not registered.** The URLs are understood, but fsspec sends them to adlfs.
+
+## Architecture
+
+| Module               | Holds                                                                             |
+|----------------------|-----------------------------------------------------------------------------------|
+| `abfs.py`            | `AbfsFileSystem`, its three storage profiles, and its file objects                |
+| `_paths.py`          | The accounts, URLs and paths, as regular expressions                              |
+| `credentials.py`     | `StorageCredential`: what each value passed as a credential gives                 |
+| `_errors.py`         | Azure's errors as `OSError`s                                                      |
+| `_listing.py`        | The blob API's recursive listing, a page asked for while the last one is parsed   |
+| `_contrib/strategy/` | The copy of fsspec-alt-strategies                                                 |
+
+`__init__.py` imports `AbfsFileSystem` on first use, as the Azure SDK is slow to import. The entry points register it
+for `abfs` and `abfss`, replacing adlfs' registration.
+
+### The account and the cache
+
+`_AccountCached`, the metaclass of `AbfsFileSystem`, runs before fsspec computes the cache key:
+
+- it refuses positional arguments;
+- it makes `account_url` into `account_name` and `account_domain`, which are in the key;
+- `_strip_tokenize_options` leaves `account_url` out of the key.
+
+`split_path` gives a path's container and its path within the container. It strips the protocol, and refuses a URL of
+another account. Every primitive starts with it. `unstrip_protocol` gives Hadoop's URL, which names the account.
+
+### The clients
+
+A `BlobServiceClient` and a `DataLakeServiceClient` are made together on first use, on the running loop, with one
+credential. The SDK's async clients hold an aiohttp session bound to that loop. fsspec caches an async file system per
+loop, so the clients are made once, and the loop is kept for closing them.
+
+`close()` closes both clients on their loop, and the credential when the file system made it from a string. A token
+credential object given is the caller's to close.
+
+### The storage profile
+
+`storage_profile` is `HNS_PROFILE`, `NO_HNS_PROFILE` or `UNKNOWN_HNS_PROFILE`:
+
+- `is_hns_enabled` given to the constructor sets it, and nothing is asked.
+- Otherwise the first operation needing it calls `_load_storage_profile` with its paths.
+- `_check_hns_enabled` asks the account information, then the root ACL of the operation's container, as a SAS or a
+  role of one container is refused the account information.
+- If neither tells, a warning is logged, and the profile stays unknown for the file system's life.
+
+### Primitives
+
+| Primitive              | With a hierarchical namespace                  | Without one                                    |
+|------------------------|------------------------------------------------|------------------------------------------------|
+| `_info`                | Get Blob Properties                            | Get Blob Properties, then List Blobs           |
+| `_ils`, one folder     | List Paths                                     | List Blobs with a delimiter                    |
+| `_ils`, recursive      | List Paths, recursive                          | `_listing.list_blobs_flat`                     |
+| `_makedirs`            | Create Path                                    | Nothing, the container checked                 |
+| `_rm_file`, `_rmdir`   | Delete Blob                                    | Delete Blob                                    |
+| `_rm_tree`             | Delete Path, recursive                         | Not called                                     |
+| `_cp_file`             | Copy Blob, waited for while pending            | Copy Blob, waited for while pending            |
+| `_mv_file`, `_mv_tree` | Rename Path within a container                 | Copy Blob, then Delete Blob                    |
+| `_cat_file`            | Get Blob                                       | Get Blob                                       |
+
+While the namespace is unknown, `_makedirs` writes a blob with the metadata `hdi_isfolder=true`: a real folder with a
+hierarchical namespace, a marker blob without one. The listings take both as folders.
+
+`_ils` lists the containers at the root. A Data Lake listing of a file fails as not found: the file then lists as
+itself, as fsspec's `_ls` lists it. Any other error is the listing's. An empty listing asks `_info`, to tell an empty
+folder from a file or nothing.
+
+### File objects
+
+`AbfsReadableFile` reads ranges of one version of a blob, by `If-Match` with its ETag. A blob replaced while it is read
+raises `OSError` with `ESTALE`.
+
+`AbfsWritableFile` writes a block blob:
+
+- under 8 MiB, by one Put Blob when it is closed;
+- otherwise by Put Block, in blocks of 4 MiB to 64 MiB, then Put Block List when it is closed;
+- mode `xb` by `If-None-Match: *` on the request making the blob visible;
+- an abort sends nothing, as the service drops uncommitted blocks after a week.
+
+In `with fs.transaction:`, `_open` wraps the file in the library's `AdaptiveWritableTransaction`. It holds back the
+Put Blob or Put Block List until commit.
+
+### Errors
+
+`azure_errors(path)` is a context manager around SDK calls. `os_error` maps an `AzureError`:
+
+| Azure error                                                          | Raised                         |
+|----------------------------------------------------------------------|--------------------------------|
+| `DirectoryNotEmpty`, `DirectoryIsNotEmpty`                           | `OSError` with `ENOTEMPTY`     |
+| `OperationNotAllowedOnDirectory`                                     | `IsADirectoryError`            |
+| `PathIsNotADirectory`, `OperationNotAllowedOnFile`                   | `NotADirectoryError`           |
+| `BlobAlreadyExists`, `PathAlreadyExists`, `ContainerAlreadyExists`   | `FileExistsError`              |
+| `ConditionNotMet`, `SourceConditionNotMet`, `ResourceModifiedError`  | `OSError` with `ESTALE`        |
+| `ResourceNotFoundError`, status 404                                  | `FileNotFoundError`            |
+| Authorization and authentication codes, status 401 or 403            | `PermissionError`              |
+| Any other conflict, with no error code                               | `FileExistsError`              |
+| Status 400                                                           | `OSError` with `EINVAL`        |
+| Any other                                                            | `OSError` with `EIO`           |
+
+`CancelledError` and errors other than `AzureError` pass as they are.
+
 ## The copy of fsspec-alt-strategies
 
 `src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, from the library's `wip`
