@@ -43,6 +43,24 @@ async def test_ls_file_and_missing(fs, tree) -> None:
         await fs._ls("nocontainer0fsspecabfs/a")
 
 
+@pytest.mark.parametrize(
+    ("status", "code", "error"),
+    [
+        (403, "AuthorizationPermissionMismatch", PermissionError),
+        (400, "InvalidQueryParameterValue", OSError),
+    ],
+)
+async def test_ls_refused_raises_the_listings_error(
+    dummy, fs, tree, hns, status: int, code: str, error: type[OSError]
+) -> None:
+    # Only a not-found listing falls back to the path's info, as a file's does.
+    dummy.failures["ListPaths" if hns else "ListBlobs"] = (status, code)
+    dummy.requests.clear()
+    with pytest.raises(error):
+        await fs._ls(f"{tree}/z.txt")
+    assert dummy.count("GetBlobProperties") == 0
+
+
 async def test_empty_folder(fs, root, hns) -> None:
     await fs._makedirs(f"{root}/empty")
     if hns:

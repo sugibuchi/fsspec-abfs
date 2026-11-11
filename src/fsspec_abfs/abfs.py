@@ -588,14 +588,18 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             async for entry in listing:
                 listed = True
                 yield entry
-        except AzureError as e:
-            # A file lists as itself, as fsspec's _ls lists it: a Data Lake
-            # listing of a file fails. Anything else raises the listing's error.
+        except ResourceNotFoundError as e:
+            # A Data Lake listing of a file is refused as not found: the file
+            # lists as itself, as fsspec's _ls lists it, and a path missing
+            # raises FileNotFoundError by its info.
             entry = None if listed or not container else await self._info(path)
             if entry is None or entry["type"] == "directory":
                 raise os_error(e, path) from e
             yield entry
             return
+        except AzureError as e:
+            # Any other failure, e.g. refused or throttled, is the listing's.
+            raise os_error(e, path) from e
 
         if not listed and container:
             # Nothing listed: an empty folder, a file, or nothing at all.
