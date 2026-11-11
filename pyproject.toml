@@ -1,7 +1,7 @@
 [project]
 name = "fsspec-abfs"
 dynamic = ["version"]
-description = "An fsspec file system for Azure Data Lake Storage Gen2, on fsspec-alt-strategies"
+description = "An fsspec file system for Azure Data Lake Storage Gen2"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
