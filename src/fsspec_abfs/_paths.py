@@ -147,11 +147,10 @@ def split_stripped(path: str) -> tuple[str, str]:
 def hadoop_url(container: str, key: str, account: str, domain: str) -> str:
     """The URL of a path in Hadoop's form, ``abfss://<container>@<account>.dfs.<domain>/<path>``.
 
-    The root, which has no container, is the account's dfs endpoint, as Hadoop's
-    form needs a container.
+    Raises ValueError for a path with no container, e.g. the root: Hadoop's form
+    has none for it.
     """
-    host = f"{account}.dfs.{domain}"
     if not container:
-        return f"https://{host}/"
+        raise ValueError("A path of no container has no URL in Hadoop's form")
     else:
-        return f"abfss://{container}@{host}/{key}"
+        return f"abfss://{container}@{account}.dfs.{domain}/{key}"

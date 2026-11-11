@@ -367,8 +367,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
         It is the form Spark and Hadoop's ABFS driver take, and names the
         account, so it is a path's full name outside the filesystem. ``name`` is
-        a path or a URL of the filesystem's account. The root, which has no
-        container, is the account's dfs endpoint, as Hadoop's form needs one.
+        a path or a URL of the filesystem's account. A path with no container,
+        e.g. the root, raises ValueError: Hadoop's form has none for it.
         """
         container, key = self.split_path(name)
         return hadoop_url(container, key, self.account_name, self.account_domain)

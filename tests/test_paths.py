@@ -159,7 +159,6 @@ def test_strip_protocol(path: str, stripped: str, account: tuple | None) -> None
             "abfss://c@acc.dfs.core.windows.net/a",
         ),
         ("/c", "abfss://c@acc.dfs.core.windows.net/"),
-        ("/", "https://acc.dfs.core.windows.net/"),
     ],
 )
 def test_unstrip_protocol(path: str, url: str) -> None:
@@ -174,6 +173,15 @@ def test_unstrip_protocol_of_another_account_is_refused() -> None:
     fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
     with pytest.raises(ValueError, match="not of this filesystem's"):
         fs.unstrip_protocol("https://other.dfs.core.windows.net/c/a")
+
+
+@pytest.mark.parametrize(
+    "path", ["/", "", "abfs://", "https://acc.dfs.core.windows.net/"]
+)
+def test_unstrip_protocol_of_no_container_is_refused(path: str) -> None:
+    fs = AbfsFileSystem(account_name="acc", skip_instance_cache=True)
+    with pytest.raises(ValueError, match="no container"):
+        fs.unstrip_protocol(path)
 
 
 @pytest.mark.parametrize(
