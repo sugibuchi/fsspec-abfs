@@ -1,6 +1,7 @@
 # Lint the code and the workflows, and test, on every push to main and pull
 # request. The offline tests run on the dummy server, with no credentials, on
-# every supported Python version.
+# every supported Python version. The coverage is uploaded to Codecov from one
+# Python version: uploading needs the repository secret CODECOV_TOKEN.
 #
 # The live tests then run on Azure, in the GitHub environment `azure`, which
 # DEVELOPMENT.md describes. An environment without AZURE_CLIENT_ID is skipped.
@@ -82,7 +83,15 @@ jobs:
 
       # The dummy server only, whatever a variable says: this job has no credentials.
       - name: Test with coverage
-        run: uv run --no-sync pytest --api=dummy --cov --cov-report=term
+        run: uv run --no-sync pytest --api=dummy --cov --cov-report=term --cov-report=xml:coverage.xml
+
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && matrix.python-version == '3.14' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          working-directory: fsspec-abfs  # the repository's checkout, beside the library's
+          files: coverage.xml
 
   live:
     needs: test
