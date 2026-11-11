@@ -275,7 +275,7 @@ account when first needed.
 from fsspec_abfs import AbfsFileSystems
 
 fs = AbfsFileSystems(
-    filesystems=[
+    accounts=[
         {"account_name": "myaccount", "is_hns_enabled": True},
         {"account_name": "opendata", "credential": "anonymous"},
     ],
@@ -297,7 +297,7 @@ lower case, without a trailing `/`.
 | Parameter               | Description                                                                         | Default       |
 |-------------------------|-------------------------------------------------------------------------------------|---------------|
 | `credential`            | The default credential: a Microsoft Entra ID token credential only.                 | `"default"`   |
-| `filesystems`           | The arguments of `AbfsFileSystem` for some accounts, a dict per account.            | `None`        |
+| `accounts`              | The arguments of `AbfsFileSystem` for some accounts, a dict per account.            | `None`        |
 | `operation_concurrency` | Maximum concurrent requests of a recursive operation, for each account.             | `100`         |
 | `io_concurrency`        | Maximum concurrent range reads and block uploads, for each account.                 | `16`          |
 | `transfer_concurrency`  | Maximum files copied between two accounts at a time.                                | `8`           |
@@ -305,10 +305,13 @@ lower case, without a trailing `/`.
 
 `credential` takes an async token credential, or a keyword or a class name naming one, as in
 [Authentication](#authentication). A SAS token, a shared key or `"anonymous"` raises `ValueError`: each fits one
-account, so give it to that account in `filesystems`. A credential named by a string takes its options from the other
-keyword arguments, e.g. `tenant_id`.
+account, so give it to that account in `accounts`.
 
-Each dict of `filesystems` names its account by `account_name`, with `account_domain`, or by `account_url`. The other
+The router makes the credential once, and every account without a credential of its own shares it, so that tokens
+are asked for once. A credential named by a string takes its options from the other keyword arguments, e.g.
+`tenant_id`, and is closed by `close()`. A credential object given is yours to close.
+
+Each dict of `accounts` names its account by `account_name`, with `account_domain`, or by `account_url`. The other
 keys are those of `AbfsFileSystem`, e.g. `credential` or `is_hns_enabled`. A dict without `credential`,
 `operation_concurrency` or `io_concurrency` takes the router's. Any account not listed takes the router's too.
 

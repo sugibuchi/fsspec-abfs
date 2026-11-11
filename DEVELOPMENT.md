@@ -257,7 +257,7 @@ the file system takes the way right on both kinds: the blob API, and moves by co
 that a name it answers is usable anywhere, e.g. by Spark. Each account is an `AbfsFileSystem` of its own.
 
 Its default credential is a Microsoft Entra ID token credential only. A SAS, a shared key or anonymous access each
-fit one account, so an account needing one is given it in `filesystems`.
+fit one account, so an account needing one is given it in `accounts`.
 
 A copy between two accounts goes one of two ways, chosen by `cross_account_copy`:
 

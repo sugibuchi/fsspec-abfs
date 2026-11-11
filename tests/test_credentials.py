@@ -134,5 +134,5 @@ async def test_the_file_system_takes_them_from_its_storage_options() -> None:
         asynchronous=True,
         skip_instance_cache=True,
     )
-    assert fs.storage_credential.value.tenant_id == "t"
-    await fs.storage_credential.value.close()
+    assert fs.credential.value.tenant_id == "t"
+    await fs.credential.value.close()

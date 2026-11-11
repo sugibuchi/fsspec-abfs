@@ -82,7 +82,7 @@ operation's behaviour.
 from fsspec_abfs import AbfsFileSystems
 
 fs = AbfsFileSystems(
-    filesystems=[{"account_name": "opendata", "credential": "anonymous"}],
+    accounts=[{"account_name": "opendata", "credential": "anonymous"}],
     cross_account_copy="server-side",
 )
 

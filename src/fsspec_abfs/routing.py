@@ -24,8 +24,8 @@ from ._paths import (
     parse_account_url,
     split_stripped,
 )
-from .abfs import AbfsFileSystem
-from .credentials import token_credential_options
+from .abfs import AbfsFileSystem, close_on_loop
+from .credentials import StorageCredential, token_credential_options
 
 if TYPE_CHECKING:
     from azure.storage.blob import UserDelegationKey
@@ -87,10 +87,10 @@ async def get_user_delegation_key(fs: AbfsFileSystem) -> UserDelegationKey:
         If the identity may not ask for a key, e.g. with a role on a
         container only.
     """
-    if fs.storage_credential.kind != "TokenCredential":
+    if fs.credential.kind != "TokenCredential":
         raise ValueError(
             "A user delegation key needs a Microsoft Entra ID token credential, not"
-            f" {fs.storage_credential.kind}"
+            f" {fs.credential.kind}"
         )
 
     async with fs._user_delegation_lock:
@@ -121,7 +121,7 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
     always ``abfss://``.
 
     Each account is an `AbfsFileSystem` of its own, made when first needed. An
-    account in ``filesystems`` is made with the arguments given there. Any
+    account in ``accounts`` is made with the arguments given there. Any
     other is made with the default ``credential`` and the concurrency given
     here. A copy or move within an account is that account's own, e.g. a
     rename. Between two accounts, it is the library's copy across storages,
@@ -133,12 +133,13 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         The default credential: a Microsoft Entra ID token credential, or a
         keyword or a class name naming one, as `StorageCredential.from_credential`
         reads it. Any other kind, e.g. a SAS token or "anonymous", is refused:
-        an account needing one is given its own in ``filesystems``. A
-        credential named by a string is made by each account's file system,
-        with the options its constructor names, e.g. ``tenant_id``, taken from
-        ``storage_options``. A credential object is shared, and is the
-        caller's to close.
-    filesystems : list of dict, optional
+        an account needing one is given its own in ``accounts``. One
+        credential object serves every account without one of its own, so
+        that its tokens are asked for once. A credential named by a string is
+        made here, with the options its constructor names, e.g.
+        ``tenant_id``, taken from ``storage_options``, and closed by `close`.
+        A credential object given is the caller's to close.
+    accounts : list of dict, optional
         The arguments of `AbfsFileSystem` for some accounts, one dict per
         account, each naming it by ``account_name`` and ``account_domain``, or
         by ``account_url``, e.g.
@@ -171,13 +172,13 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
     ------
     ValueError
         If ``credential`` is no token credential, ``cross_account_copy`` none
-        of its values, or an account of ``filesystems`` given twice or not at
+        of its values, or an account of ``accounts`` given twice or not at
         all.
 
     Examples
     --------
     >>> fs = AbfsFileSystems(
-    ...     filesystems=[{"account_name": "opendata", "credential": "anonymous"}],
+    ...     accounts=[{"account_name": "opendata", "credential": "anonymous"}],
     ...     cross_account_copy="server-side",
     ... )
     >>> fs.ls("abfss://data@myaccount.dfs.core.windows.net/raw")
@@ -198,7 +199,7 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         self,
         *,
         credential: Any = "default",
-        filesystems: list[dict[str, Any]] | None = None,
+        accounts: list[dict[str, Any]] | None = None,
         operation_concurrency: int | None = None,
         io_concurrency: int | None = None,
         transfer_concurrency: int | None = None,
@@ -211,14 +212,19 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
                 f" {cross_account_copy!r}"
             )
 
-        self.credential = credential
-        # Checked here, made by each account's file system.
+        self._credential_given = credential
+        # Checked first, as a SAS or a key would make a credential of another kind.
         self._credential_options = token_credential_options(credential, storage_options)
+        self.credential = StorageCredential.from_credential(
+            credential, **self._credential_options
+        )
+        # One made from a string is the router's to close, with its accounts.
+        self._owns_credential = self.credential.value is not credential
         self.operation_concurrency = operation_concurrency
         self.io_concurrency = io_concurrency
         self.cross_account_copy: CrossAccountCopy = cross_account_copy
         self._accounts: dict[_Account, dict[str, Any]] = {}
-        for options in filesystems or []:
+        for options in accounts or []:
             account = _account_of(options)
             if account in self._accounts:
                 raise ValueError(
@@ -274,7 +280,7 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
     ) -> AbfsFileSystem:
         """The `AbfsFileSystem` of an account, made the first time, with its arguments.
 
-        Its arguments are those of ``filesystems`` for the account. The
+        Its arguments are those of ``accounts`` for the account. The
         default credential and concurrency fill in those it lacks.
         """
         account = check_account(account_name, account_domain)
@@ -284,7 +290,9 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
             options.pop("account_url", None)
             options.update(account_name=account[0], account_domain=account[1])
             if "credential" not in options:
-                options.update(credential=self.credential, **self._credential_options)
+                # The router's own object, shared: the account's file system
+                # does not close it.
+                options["credential"] = self.credential.value
             for name in ("operation_concurrency", "io_concurrency"):
                 if options.get(name) is None and getattr(self, name) is not None:
                     options[name] = getattr(self, name)
@@ -294,6 +302,27 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
             )
 
         return self._backend(account, make)  # type: ignore[return-value]
+
+    def close(self) -> None:
+        """Close the accounts' file systems, then the credential the router made.
+
+        The credential is closed on the loop where the accounts' clients ran,
+        which its sessions are bound to: unused, it holds nothing. A new one is
+        made for the calls after, as the accounts' file systems are.
+        """
+        loops = [
+            fs._client_loop  # type: ignore[attr-defined]
+            for fs in self._backends.values()
+            if getattr(fs, "_client_loop", None) is not None
+        ]
+        try:
+            super().close()
+        finally:
+            if self._owns_credential and loops:
+                close_on_loop(loops[0], [self.credential.value])
+                self.credential = StorageCredential.from_credential(
+                    self._credential_given, **self._credential_options
+                )
 
     # Copies between two accounts.
 
@@ -316,13 +345,13 @@ class AbfsFileSystems(AsyncRoutingFileSystem):
         """A blob's URL, with what lets another account read it, by the credential of its account."""
         container, key = fs.split_path(path)
         blob = fs._blob(container, key)
-        kind = fs.storage_credential.kind
+        kind = fs.credential.kind
         if kind == "TokenCredential":
             delegation = await get_user_delegation_key(fs)
             sas = self._sas(fs, container, key, user_delegation_key=delegation)
             return f"{blob.url}?{sas}"
         elif kind == "SharedKey":
-            sas = self._sas(fs, container, key, account_key=fs.storage_credential.value)
+            sas = self._sas(fs, container, key, account_key=fs.credential.value)
             return f"{blob.url}?{sas}"
         else:
             # A SAS is in the client's URL already. Anonymous, the blob is public.
@@ -371,7 +400,7 @@ def _url(account: str, domain: str, container: str, key: str) -> str:
 
 
 def _account_of(options: dict[str, Any]) -> _Account:
-    """The account an entry of ``filesystems`` names, checked."""
+    """The account an entry of ``accounts`` names, checked."""
     if options.get("account_url"):
         if options.get("account_name") or options.get("account_domain"):
             raise ValueError(
@@ -385,5 +414,5 @@ def _account_of(options: dict[str, Any]) -> _Account:
         )
     else:
         raise ValueError(
-            "Each of filesystems names its account: account_name, or account_url"
+            "Each of accounts names its account: account_name, or account_url"
         )

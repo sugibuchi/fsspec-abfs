@@ -173,6 +173,35 @@ def _folder_entry(name: str) -> dict[str, Any]:
     return {"name": name.rstrip("/"), "size": 0, "type": "directory"}
 
 
+def close_on_loop(
+    loop: asyncio.AbstractEventLoop | None, closeables: list[Any]
+) -> None:
+    """Close async clients or credentials, each by its ``close()``, on the loop their sessions are bound to.
+
+    On that loop itself, nothing can wait for it: the closing is a task. From
+    any other thread, it is waited for, 5 s at most. A loop closed, or not
+    running, or an interpreter finishing, closes nothing: their sessions go
+    with it. Failures are ignored, as nothing is left to do with them.
+    """
+    if not closeables or loop is None or loop.is_closed():
+        return
+
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+
+    async def close_all() -> None:
+        for closeable in closeables:
+            with contextlib.suppress(Exception):
+                await closeable.close()
+
+    if running is loop:
+        loop.create_task(close_all())
+    elif loop.is_running() and not sys.is_finalizing():
+        sync(loop, close_all, timeout=5.0)
+
+
 class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
     """The metaclass of `AbfsFileSystem`: its instances are cached by account.
 
@@ -315,13 +344,13 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         # The endpoints the clients are made on, at first use.
         self._dfs_url = f"https://{self.account_name}.dfs.{self.account_domain}"
         self._blob_url = f"https://{self.account_name}.blob.{self.account_domain}"
-        self.storage_credential = StorageCredential.from_credential(
+        self.credential = StorageCredential.from_credential(
             credential, **storage_options
         )
         # A token credential made from a string is this file system's to close.
         self._owns_credential = (
-            self.storage_credential.kind == "TokenCredential"
-            and self.storage_credential.value is not credential
+            self.credential.kind == "TokenCredential"
+            and self.credential.value is not credential
         )
         # Declared, or set once `_check_hns_enabled` asks: the storage profile follows it. Until
         # loaded, it is the declared account's profile, or the unknown one's.
@@ -409,10 +438,10 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             loop = asyncio.get_running_loop()
             # Both on the account's two endpoints, with the same credential.
             self._blob_service_client = BlobServiceClient(
-                self._blob_url, credential=self.storage_credential.value
+                self._blob_url, credential=self.credential.value
             )
             self._dfs_service_client = DataLakeServiceClient(
-                self._dfs_url, credential=self.storage_credential.value
+                self._dfs_url, credential=self.credential.value
             )
             self._client_loop = loop
 
@@ -440,28 +469,13 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             # A credential of its own is closed with the clients, on their loop,
             # where its requests ran. Unused, it holds nothing.
             if clients and self._owns_credential:
-                clients.append(self.storage_credential.value)
+                clients.append(self.credential.value)
                 self._owns_credential = False
             loop = self._client_loop
             self._blob_service_client = self._dfs_service_client = None
             self._client_loop = None
             self._closed = True
-            if clients and loop is not None and not loop.is_closed():
-                try:
-                    running = asyncio.get_running_loop()
-                except RuntimeError:
-                    running = None
-
-                async def close_clients() -> None:
-                    for client in clients:
-                        with contextlib.suppress(Exception):
-                            await client.close()
-
-                if running is loop:
-                    # Nothing can wait for it on its own loop.
-                    loop.create_task(close_clients())
-                elif loop.is_running() and not sys.is_finalizing():
-                    sync(loop, close_clients, timeout=5.0)
+            close_on_loop(loop, clients)
         finally:
             super().close()
 
@@ -884,7 +898,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             # The SDK sends another container's rename with the client's
             # credential, but holds a SAS in the source's URL only: it takes the
             # destination's from the new name. Anonymous, it refuses the rename.
-            credential = self.storage_credential
+            credential = self.credential
             if credential.kind == "Anonymous":
                 raise PermissionError(
                     errno.EACCES, "No anonymous rename between containers", path1

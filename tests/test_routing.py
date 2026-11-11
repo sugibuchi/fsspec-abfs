@@ -53,12 +53,14 @@ async def make_router(dummy, dummy_endpoints, hns):
     ) -> AbfsFileSystems:
         credentials = {"a": "anonymous", "b": "anonymous", **(credentials or {})}
         kwargs.setdefault(
-            "filesystems",
+            "accounts",
             [
                 {"account_name": name, "credential": credential, "is_hns_enabled": hns}
                 for name, credential in credentials.items()
             ],
         )
+        # A default credential asking nothing: each account here has its own.
+        kwargs.setdefault("credential", _Token())
         router = AbfsFileSystems(asynchronous=True, skip_instance_cache=True, **kwargs)
         for name in credentials:
             # The clients are made on these at first use: the dummy's, then.
@@ -159,7 +161,7 @@ def test_an_account_takes_its_own_arguments() -> None:
         credential=token,
         operation_concurrency=7,
         io_concurrency=5,
-        filesystems=[
+        accounts=[
             {
                 "account_name": "opendata",
                 "credential": "anonymous",
@@ -173,16 +175,16 @@ def test_an_account_takes_its_own_arguments() -> None:
         skip_instance_cache=True,
     )
     opendata = fs.filesystem("opendata")
-    assert opendata.storage_credential.kind == "Anonymous"
+    assert opendata.credential.kind == "Anonymous"
     assert (opendata.operation_concurrency, opendata.io_concurrency) == (7, 3)
 
     fab = fs.filesystem("fab", "fabric.microsoft.com")
-    assert fab.storage_credential.value is token
+    assert fab.credential.value is token
     assert fab.is_hns_enabled is True
 
     # Any other account takes the defaults: the shared credential object, and the concurrency.
     other = fs.filesystem("other")
-    assert other.storage_credential.value is token
+    assert other.credential.value is token
     assert (other.operation_concurrency, other.io_concurrency) == (7, 5)
     assert fs.filesystem("other") is other
 
@@ -191,13 +193,26 @@ def test_a_credential_named_takes_its_options() -> None:
     fs = AbfsFileSystems(
         credential="azure-cli", tenant_id="t", skip_instance_cache=True
     )
-    inner = fs.filesystem("myaccount")
-    assert inner.storage_credential.value.tenant_id == "t"
-    asyncio.run(inner.storage_credential.value.close())
+    credential = fs.credential.value
+    assert credential.tenant_id == "t"
+    # Made once by the router, shared by the accounts, which do not close it.
+    for name in ("one", "two"):
+        inner = fs.filesystem(name)
+        assert inner.credential.value is credential
+        assert not inner._owns_credential
+    assert fs._owns_credential
+    asyncio.run(credential.close())
+
+
+def test_a_credential_object_is_the_callers() -> None:
+    token = _Token()
+    fs = AbfsFileSystems(credential=token, skip_instance_cache=True)
+    assert fs.credential.value is token
+    assert not fs._owns_credential
 
 
 @pytest.mark.parametrize(
-    ("filesystems", "match"),
+    ("accounts", "match"),
     [
         (
             [{"account_name": "a"}, {"account_url": "https://a.blob.core.windows.net"}],
@@ -211,9 +226,9 @@ def test_a_credential_named_takes_its_options() -> None:
         ([{"account_name": "Not_An_Account"}], "Not an account name"),
     ],
 )
-def test_filesystems_are_checked(filesystems: list[dict[str, Any]], match: str) -> None:
+def test_accounts_are_checked(accounts: list[dict[str, Any]], match: str) -> None:
     with pytest.raises(ValueError, match=match):
-        AbfsFileSystems(filesystems=filesystems, skip_instance_cache=True)
+        AbfsFileSystems(accounts=accounts, skip_instance_cache=True)
 
 
 def test_cross_account_copy_is_checked() -> None:
@@ -329,7 +344,7 @@ async def test_anonymous_source_url(make_router) -> None:
 def _keyed(kind: str = "TokenCredential") -> Any:
     """An account's file system, as far as `get_user_delegation_key` reads it, counting its requests."""
     fs = SimpleNamespace(
-        storage_credential=SimpleNamespace(kind=kind),
+        credential=SimpleNamespace(kind=kind),
         account_name="a",
         account_domain="core.windows.net",
         _user_delegation_key=None,
