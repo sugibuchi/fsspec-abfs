@@ -60,7 +60,7 @@ account needs no `account_name`:
 ```python
 import pandas as pd
 
-df = pd.read_parquet("abfss://mycontainer@myaccount.dfs.core.windows.net/data/table.parquet")
+df = pd.read_csv("abfss://mycontainer@myaccount.dfs.core.windows.net/data/table.csv")
 ```
 
 See [USAGE.md](https://github.com/sugibuchi/fsspec-abfs/blob/main/USAGE.md) for options, authentication and each
