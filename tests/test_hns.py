@@ -101,17 +101,9 @@ async def test_unknown_kept(dummy, make_fs, caplog) -> None:
     assert "SECRET" not in caplog.text  # Never Azure's message.
 
 
-async def test_no_container_asks_the_first_listed(dummy, make_fs, hns) -> None:
-    # An operation at the root names no container: the first listed is asked.
+async def test_no_container(dummy, make_fs) -> None:
+    # An operation at the root names no container to ask.
     dummy.failures["GetAccountInformation"] = _REFUSED
-    fs = make_fs(is_hns_enabled=None)
-    assert await fs._check_hns_enabled("") is hns
-    assert dummy.count("GetAccessControl") == 1
-
-
-async def test_no_container_to_ask(dummy, make_fs) -> None:
-    dummy.failures["GetAccountInformation"] = _REFUSED
-    dummy.failures["ListContainers"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
     assert await fs._check_hns_enabled("") is None
     assert dummy.count("GetAccessControl") == 0
@@ -140,7 +132,6 @@ async def test_recursive_methods_probe_their_container(
     await call(fs)
     assert fs.is_hns_enabled is hns
     assert dummy.count("GetAccessControl") == 1
-    assert dummy.count("ListContainers") == 0
 
 
 async def test_walk_probes_its_container(dummy, make_fs, hns) -> None:
@@ -151,7 +142,6 @@ async def test_walk_probes_its_container(dummy, make_fs, hns) -> None:
     walked = [root async for root, _, _ in fs._walk("/c")]
     assert walked == ["/c", "/c/a"]
     assert fs.is_hns_enabled is hns
-    assert dummy.count("ListContainers") == 0
 
 
 @pytest.mark.xfail(

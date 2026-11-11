@@ -494,8 +494,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         2. Else the root ACL of ``container``, the container the first
            operation acted in, from the Data Lake API: an account without a
            hierarchical namespace refuses it by an error code of its own. An
-           operation at the root, of no container, asks the first container
-           listed. Any other failure tells nothing.
+           operation at the root has no container to ask. Any other failure
+           tells nothing.
 
         Only an error's type, status and code are logged: Azure's messages may
         quote request URLs, with a SAS token in them.
@@ -509,8 +509,6 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             logger.debug("Account information refused: %s", describe(e))
             last = e
 
-        if not container:
-            container = await self._first_container()
         if container:
             directory = dfs_service.get_file_system_client(
                 container
@@ -533,29 +531,6 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             describe(last) if last else "no container to ask",
         )
         return None
-
-    async def _first_container(self) -> str:
-        """The first container listed, whose root ACL `_check_hns_enabled` may ask, or "" if none can be listed."""
-        try:
-            async for c in self._blob_service().list_containers(results_per_page=1):
-                return c.name
-        except AzureError as e:
-            logger.debug("Containers not listed: %s", describe(e))
-        return ""
-
-    async def _rm_tree(self, path: str) -> None:
-        """Delete a folder with all in it, or a file, by one Data Lake request.
-
-        Called only with a hierarchical namespace, as `HNS_PROFILE` declares.
-        """
-        container, key = self.split_path(path)
-        path = self._strip_protocol(path)
-        if not key:
-            raise IsADirectoryError(errno.EISDIR, "Not deleting a container", path)
-        # A path's deletion: of a folder, recursive, or of a file.
-        directory = self._dfs_service().get_directory_client(container, key)
-        with azure_errors(path):
-            await directory.delete_directory()
 
     # Describing and listing.
 
@@ -749,6 +724,20 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                 if real:
                     raise
                 # A folder with no blob of its own is gone with its last blob.
+
+    async def _rm_tree(self, path: str) -> None:
+        """Delete a folder with all in it, or a file, by one Data Lake request.
+
+        Called only with a hierarchical namespace, as `HNS_PROFILE` declares.
+        """
+        container, key = self.split_path(path)
+        path = self._strip_protocol(path)
+        if not key:
+            raise IsADirectoryError(errno.EISDIR, "Not deleting a container", path)
+        # A path's deletion: of a folder, recursive, or of a file.
+        directory = self._dfs_service().get_directory_client(container, key)
+        with azure_errors(path):
+            await directory.delete_directory()
 
     async def _makedirs(self, path: str, exist_ok: bool = False) -> None:
         """Make a folder and its missing parents, in an existing container.
