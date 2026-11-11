@@ -137,6 +137,73 @@ Only live tests check what the dummy assumes, and what it does not model:
 - authentication, SAS tokens and roles, and the probe refused by them;
 - the latency, throttling and retries of a real service.
 
+## CI
+
+| Workflow       | Runs on                                  | Does                                          |
+|----------------|------------------------------------------|-----------------------------------------------|
+| `ci.yaml`      | Pull requests, pushes to `main`, by hand | Lint, offline tests, then live tests on Azure |
+| `release.yaml` | Pushed `v*` tags                         | Build, GitHub release, and publishing to PyPI |
+
+`ci.yaml` has three jobs:
+
+- `lint`: ruff check, ruff format check, zizmor and actionlint;
+- `test`: pytest `--api=dummy` on Python 3.11 to 3.14, with no credentials;
+- `live`: after `test`, pytest `--api=live` on Python 3.14, in the GitHub environment `azure`.
+
+`live` runs on pushes, by hand, and on pull requests from branches of this repository. Pull requests from forks and
+Dependabot get no environment, so they run `test` only. An environment without `AZURE_CLIENT_ID` is skipped with a
+notice.
+
+Until the library's next release, `test` and `live` also check out fsspec-alt-strategies' `wip` branch beside this
+repository, where `[tool.uv.sources]` and `uv.lock` expect it.
+
+### Supply chain
+
+The live job holds a credential of the accounts, so what it runs is fixed:
+
+- `uv.lock` is committed, with every package's hash. CI installs with `uv sync --locked`, which fails on a stale lock.
+- Actions are pinned to commit SHAs, and setup-uv to a uv version.
+- Dependabot updates `uv.lock` and the Actions' SHAs weekly.
+- Each workflow's token can only read the repository. Only the jobs that need them add `id-token: write` or
+  `contents: write`.
+- The live job and the release build use no cache.
+
+ruff, zizmor and actionlint, run with `uvx`, are the exception: CI runs their latest versions, in a job without secrets.
+
+### The `azure` environment
+
+The live tests authenticate as a Microsoft Entra ID app, by workload identity federation: no secret is stored. The
+app needs Storage Blob Data Contributor on the test container of each account.
+
+| Variable                            | Value                                                         |
+|-------------------------------------|---------------------------------------------------------------|
+| `AZURE_CLIENT_ID`                   | The app's client ID                                           |
+| `AZURE_TENANT_ID`                   | Its tenant's ID                                               |
+| `FSSPEC_ABFS_TEST_HNS_ACCOUNT_URL`  | The endpoint of an account with a hierarchical namespace      |
+| `FSSPEC_ABFS_TEST_FLAT_ACCOUNT_URL` | The endpoint of an account without one                        |
+| `FSSPEC_ABFS_TEST_CONTAINER`        | A container of that name in each account                      |
+
+The kinds of account tested are those whose endpoint is set. The app's federated credential names the issuer
+`https://token.actions.githubusercontent.com`, the subject `repo:sugibuchi/fsspec-abfs:environment:azure` and the
+audience `api://AzureADTokenExchange`.
+
+`.github/scripts/with-id-token-file.sh` keeps GitHub's ID token in a file, refreshed every minute, and sets
+`AZURE_FEDERATED_TOKEN_FILE`. `DefaultAzureCredential` then exchanges it through its `WorkloadIdentityCredential`.
+
+## Releasing
+
+The version comes from the git tag, through hatch-vcs.
+
+1. Push a new tag `vX.Y.Z` on `main`, e.g. `git push origin v0.1.0`.
+2. `release.yaml` builds the package and checks that its version is the tag's.
+3. It creates the GitHub release with the built files, and publishes them to PyPI in the GitHub environment `pypi`.
+
+PyPI's trusted publisher for `fsspec-abfs` names the workflow `release.yaml` and the environment `pypi`. It
+authenticates with the workflow's OIDC token, with no stored token.
+
+Release only once fsspec-alt-strategies has released the interface this package needs. The published package depends
+on `fsspec-alt-strategies` from PyPI: `[tool.uv.sources]` is for development only.
+
 ## Design
 
 ### One file system per account
