@@ -23,7 +23,9 @@ fs = fsspec.filesystem("abfss", account_name="myaccount")
 A file system works on one account. fsspec caches one per account, credential and options, however the account is
 given.
 
-### Options
+---
+
+## Options
 
 All are keyword arguments:
 
@@ -54,7 +56,9 @@ requests with one. Unless `is_hns_enabled` says, the first operation needing to 
 If neither answers, a warning is logged, and the file system takes the way right on both kinds of account. Pass
 `is_hns_enabled` to save the request, or where the credential cannot ask.
 
-### Logging
+---
+
+## Logging
 
 The library logs under the `fsspec_abfs` logger, and installs no handlers. A warning says when the hierarchical
 namespace cannot be told.
