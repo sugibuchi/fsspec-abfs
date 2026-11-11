@@ -472,15 +472,22 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
         The account is one namespace, so one profile fits the filesystem. The
         base class loads it once, with the paths of the first operation needing
-        it, and keeps it as ``storage_profile``. If the account must be asked,
-        the container's root ACL is a probe a container's SAS or role is allowed.
+        it, and keeps it as ``storage_profile``. A namespace declared to the
+        constructor is never asked. Else the account is asked, by
+        `_check_hns_enabled`, at the container of ``path``: a container's SAS or
+        role is allowed its root ACL. What it tells, or None, is kept as
+        `is_hns_enabled`.
         """
-        return _PROFILES[await self._check_hns_enabled(self.split_path(path)[0])]
+        if self._is_hns_enabled is None:
+            self._is_hns_enabled = await self._check_hns_enabled(
+                self.split_path(path)[0]
+            )
+        return _PROFILES[self._is_hns_enabled]
 
     async def _check_hns_enabled(self, container: str) -> bool | None:
-        """Whether the account has a hierarchical namespace: True, False, or None if unsure.
+        """Ask the account whether it has a hierarchical namespace: True, False, or None if unsure.
 
-        Awaited by `_load_storage_profile`, once per filesystem.
+        It asks every time: `_load_storage_profile` keeps what it tells.
 
         1. The blob service's account information says so, but needs a role
            on the account: a container's SAS or role is refused it.
@@ -493,15 +500,11 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         Only an error's type, status and code are logged: Azure's messages may
         quote request URLs, with a SAS token in them.
         """
-        if self._is_hns_enabled is not None:
-            return self._is_hns_enabled
-
         blob_service, dfs_service = self._blob_service(), self._dfs_service()
         last: BaseException | None = None
         try:
             info = await blob_service.get_account_information()
-            self._is_hns_enabled = bool(info.get("is_hns_enabled"))
-            return self._is_hns_enabled
+            return bool(info.get("is_hns_enabled"))
         except AzureError as e:
             logger.debug("Account information refused: %s", describe(e))
             last = e
@@ -514,11 +517,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             ).get_directory_client("/")
             try:
                 await directory.get_access_control()
-                self._is_hns_enabled = True
                 return True
             except HttpResponseError as e:
                 if getattr(e, "error_code", None) in _NO_HNS_CODES:
-                    self._is_hns_enabled = False
                     return False
                 last = e
             except AzureError as e:

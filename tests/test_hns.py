@@ -47,8 +47,13 @@ async def test_probe(make_fs, root, hns) -> None:
 async def test_account_information(dummy, make_fs, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
     assert await fs._check_hns_enabled("c") is hns
-    assert await fs._check_hns_enabled("c") is hns
     assert dummy.operations() == ["GetAccountInformation"]
+    # It asks each time, keeping nothing: loading the profile keeps it.
+    assert fs.is_hns_enabled is None
+    await fs._get_storage_profile("/c")
+    await fs._get_storage_profile("/c")
+    assert fs.is_hns_enabled is hns
+    assert dummy.operations() == ["GetAccountInformation"] * 2
 
 
 async def test_root_acl(dummy, make_fs, hns) -> None:
@@ -74,6 +79,7 @@ async def test_root_acl_unsupported_features(dummy, make_fs) -> None:
     dummy.failures["GetAccessControl"] = (409, "EndpointUnsupportedAccountFeatures")
     fs = make_fs(is_hns_enabled=None)
     assert await fs._check_hns_enabled("c") is False
+    await fs._get_storage_profile("/c")
     assert fs.is_hns_enabled is False
 
 
