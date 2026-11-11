@@ -265,7 +265,9 @@ def _error(service: str, request: Request, e: ApiError) -> Response:
     return Response(body, e.status, headers, media_type="application/xml")
 
 
-def _blob_operation(method: str, container: str, key: str, q: Any, h: Any) -> str:
+def _blob_operation(  # noqa: C901 - one branch per REST operation, as Azure's reference lists them.
+    method: str, container: str, key: str, q: Any, h: Any
+) -> str:
     """The REST operation a blob API request is, by its path, method, query and headers, or "" if not simulated."""
     if not container:
         if q.get("restype") == "account" and q.get("comp") == "properties":

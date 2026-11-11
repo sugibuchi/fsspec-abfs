@@ -56,7 +56,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # noqa: PLC0415
 
     load_dotenv()
     for marker in (
@@ -185,20 +185,23 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
     credential = None
     if api == "dummy":
         request.getfixturevalue("dummy")
-        # A real account's URL, as the constructor takes, with the dummy's endpoints.
+        # An account by its name, as the constructor takes, with the dummy's endpoints.
         endpoints: tuple[str, str] | None = request.getfixturevalue("dummy_endpoints")
-        url = "https://dummy.dfs.core.windows.net/"
+        account: dict[str, Any] = {"account_name": "dummy"}
     else:
-        from azure.identity.aio import DefaultAzureCredential
+        from azure.identity.aio import DefaultAzureCredential  # noqa: PLC0415
 
         url, container = _live_settings(hns)
+        account = {"account_url": url}
         endpoints = None
         credential = DefaultAzureCredential()
 
     def make(**kwargs: Any) -> AbfsFileSystem:
         kwargs.setdefault("is_hns_enabled", hns)
         kwargs.setdefault("asynchronous", True)
-        fs = AbfsFileSystem(url, credential, skip_instance_cache=True, **kwargs)
+        fs = AbfsFileSystem(
+            credential=credential, skip_instance_cache=True, **account, **kwargs
+        )
         if endpoints is not None:
             # The clients are made on these at first use: the dummy's, then.
             fs._dfs_url, fs._blob_url = endpoints
@@ -208,7 +211,7 @@ async def make_fs(api: str, hns: bool, request: pytest.FixtureRequest):
     try:
         if api == "live" and hns not in _live_checked:
             try:
-                await make()._info(container)
+                await make()._info(f"/{container}")
             except Exception as e:
                 pytest.fail(
                     f"No live account at {url}, container {container}: {e!r}",
@@ -238,12 +241,12 @@ def fs(make_fs) -> AbfsFileSystem:
 
 @pytest.fixture
 async def root(api: str, hns: bool, make_fs) -> Any:
-    """A folder of the test's own, not created: ``c/work`` on the dummy server, deleted afterwards when live."""
+    """A folder of the test's own, not created: ``/c/work`` on the dummy server, deleted afterwards when live."""
     if api == "dummy":
-        yield f"{DUMMY_CONTAINER}/work"
+        yield f"/{DUMMY_CONTAINER}/work"
         return
     _, container = _live_settings(hns)
-    path = f"{container}/fsspec-abfs-test-{_RUN}/{uuid.uuid4().hex[:8]}"
+    path = f"/{container}/fsspec-abfs-test-{_RUN}/{uuid.uuid4().hex[:8]}"
     try:
         yield path
     finally:

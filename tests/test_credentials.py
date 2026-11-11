@@ -40,7 +40,7 @@ async def test_a_keyword_makes_its_class_with_the_arguments() -> None:
 
 @pytest.mark.parametrize("keyword", sorted(TOKEN_CREDENTIALS))
 def test_every_keyword_names_an_async_class(keyword: str) -> None:
-    from fsspec_abfs.credentials import _load
+    from fsspec_abfs.credentials import _load  # noqa: PLC0415
 
     assert _load(TOKEN_CREDENTIALS[keyword])
 
@@ -121,10 +121,10 @@ def test_other_credentials_leave_the_options(value: str) -> None:
 
 
 async def test_the_file_system_takes_them_from_its_storage_options() -> None:
-    from fsspec_abfs.abfs import AbfsFileSystem
+    from fsspec_abfs.abfs import AbfsFileSystem  # noqa: PLC0415
 
     fs = AbfsFileSystem(
-        "https://acct.dfs.core.windows.net/",
+        "acct",
         "azure-cli",
         tenant_id="t",
         asynchronous=True,

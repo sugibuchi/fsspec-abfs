@@ -321,13 +321,13 @@ async def test_mv_creates_parents(dummy, fs, tree) -> None:
 
 @pytest.mark.hns_only
 async def test_mv_between_containers(dummy, fs, tree) -> None:
-    await fs._makedirs("c2", exist_ok=True)
+    dummy.create_container("c2")
     dummy.requests.clear()
     # The account renames folders, but each container is a rename domain of
     # its own: a folder's move between two is refused, with nothing copied.
     # Containers as filesystems under a router would copy it instead.
     with pytest.raises(OSError) as info:
-        await fs._mv(f"{tree}/a", "c2/moved", recursive=True)
+        await fs._mv(f"{tree}/a", "/c2/moved", recursive=True)
     assert errno.EXDEV in (
         info.value.errno,
         getattr(info.value.__cause__, "errno", None),
@@ -338,7 +338,7 @@ async def test_mv_between_containers(dummy, fs, tree) -> None:
     assert set(dummy.files("c")) >= {"work/a/x.txt", "work/a/b/y.txt"}
 
     # A file still moves between containers: copied, then deleted.
-    await fs._mv(f"{tree}/z.txt", "c2/z.txt")
+    await fs._mv(f"{tree}/z.txt", "/c2/z.txt")
     assert set(dummy.files("c2")) == {"z.txt"}
 
 
@@ -399,8 +399,8 @@ async def test_pending_copy(dummy, fs, tree) -> None:
 
 async def test_cp_missing_container(dummy, fs, tree) -> None:
     with pytest.raises(FileNotFoundError) as info:
-        await fs._cp_file(f"{tree}/z.txt", "nocontainer/copy")
-    assert info.value.filename == "nocontainer/copy"
+        await fs._cp_file(f"{tree}/z.txt", "/nocontainer/copy")
+    assert info.value.filename == "/nocontainer/copy"
 
 
 async def test_unknown_hns_marks_folders(dummy, make_fs, root) -> None:
@@ -427,14 +427,26 @@ async def test_unknown_hns_marks_folders(dummy, make_fs, root) -> None:
 
 
 async def test_containers(dummy, fs, hns) -> None:
-    await fs._makedirs("newcontainer/d")
-    assert await fs._ls("", detail=False) == ["c", "newcontainer"]
+    # The root lists the containers, but makes none: Azure's own means do.
+    with pytest.raises(PermissionError):
+        await fs._makedirs("/newcontainer")
+    with pytest.raises(PermissionError):
+        await fs._mkdir("/newcontainer")
+    with pytest.raises(FileNotFoundError):
+        await fs._makedirs("/newcontainer/d")
+    assert "newcontainer" not in dummy.containers
+
+    dummy.create_container("newcontainer")
+    await fs._makedirs("/newcontainer", exist_ok=True)
+    await fs._makedirs("/newcontainer/d")
+    assert await fs._ls("/", detail=False) == ["/c", "/newcontainer"]
+    assert await fs._ls("", detail=False) == ["/c", "/newcontainer"]
     if hns:
         # Its folder d is in it.
         with pytest.raises(OSError) as info:
-            await fs._rmdir("newcontainer")
+            await fs._rmdir("/newcontainer")
         assert info.value.errno == errno.ENOTEMPTY
     else:
-        await fs._rmdir("newcontainer")
-    await fs._rmdir("c")
+        await fs._rmdir("/newcontainer")
+    await fs._rmdir("/c")
     assert "c" not in dummy.containers

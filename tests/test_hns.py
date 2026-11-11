@@ -62,7 +62,7 @@ async def test_root_acl_of_first_container(dummy, make_fs, root, hns) -> None:
     # The profile is loaded by a primitive, which names the container to probe.
     dummy.failures["GetAccountInformation"] = _REFUSED
     fs = make_fs(is_hns_enabled=None)
-    await fs._ls(root.partition("/")[0])
+    await fs._ls("/" + root.split("/")[1])
     assert fs.is_hns_enabled is hns
     assert dummy.count("GetAccessControl") == 1
 

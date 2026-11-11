@@ -12,7 +12,7 @@ from fsspec_abfs.abfs import _blob_entry
 async def test_lists_what_the_sdk_lists_over_several_pages(fs, dummy, root) -> None:
     for i in range(23):
         await fs._pipe_file(f"{root}/d{i % 3}/f{i:02}.txt", b"x" * i)
-    container, key = root.split("/", 1)
+    container, key = root.lstrip("/").split("/", 1)
     # A folder's marker blob, as Hadoop's drivers write: a directory entry.
     client = fs._blob_service().get_container_client(container)
     await client.upload_blob(f"{key}/d0/sub", b"", metadata={"hdi_isfolder": "true"})
@@ -54,4 +54,4 @@ def test_an_encoded_name_is_decoded() -> None:
         b"<Properties><Content-Length>3</Content-Length></Properties></Blob></Blobs>"
         b"<NextMarker /></EnumerationResults>"
     )
-    assert [e["name"] for e in entries("c", body, "")] == ["c/a\x0bb"]
+    assert [e["name"] for e in entries("c", body, "")] == ["/c/a\x0bb"]

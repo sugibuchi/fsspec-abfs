@@ -53,7 +53,15 @@ from ._contrib.strategy.files.fsspec_transaction import (
 from ._contrib.strategy.tree.filesystem import TreeFileSystem
 from ._errors import azure_errors, describe, os_error
 from ._listing import list_blobs_flat
-from ._paths import account_url_of, parse_account_url, split_path, strip_protocol
+from ._paths import (
+    DEFAULT_DOMAIN,
+    AccountDomain,
+    account_of,
+    check_account,
+    parse_account_url,
+    split_path,
+    strip_protocol,
+)
 from ._ranges import plan
 from .credentials import StorageCredential
 
@@ -128,7 +136,7 @@ _NO_HNS_CODES = frozenset(
     {"HierarchicalNamespaceNotEnabled", "EndpointUnsupportedAccountFeatures"}
 )
 
-_root_info = {"name": "", "size": 0, "type": "directory"}
+_root_info = {"name": "/", "size": 0, "type": "directory"}
 
 
 def _is_folder_blob(metadata: dict[str, str] | None) -> bool:
@@ -141,7 +149,7 @@ def _is_folder_blob(metadata: dict[str, str] | None) -> bool:
 
 def _blob_entry(container: str, props: Any) -> dict[str, Any]:
     """The fsspec entry of a blob's properties: a file, or a folder by its metadata."""
-    name = f"{container}/{props.name.rstrip('/')}"
+    name = f"/{container}/{props.name.rstrip('/')}"
     if _is_folder_blob(props.metadata):
         return {
             "name": name,
@@ -164,30 +172,108 @@ def _folder_entry(name: str) -> dict[str, Any]:
     return {"name": name.rstrip("/"), "size": 0, "type": "directory"}
 
 
-class AbfsFileSystem(TreeFileSystem):
+_POSITIONAL = ("account_name", "credential")
+"""The arguments of `AbfsFileSystem` that may come by position, in order."""
+
+
+class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
+    """The metaclass of `AbfsFileSystem`: its instances are cached by account.
+
+    fsspec caches a filesystem by the arguments it is made with. The account
+    may come as ``account_url``, or as ``account_name`` and an optional
+    ``account_domain``: each is made ``account_name`` and ``account_domain``
+    here, before fsspec computes the key, so that one account gives one key
+    however it is named. ``account_url`` is then left out of the key, by
+    `AbfsFileSystem._strip_tokenize_options`.
+    """
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+        if len(args) > len(_POSITIONAL):
+            raise TypeError(
+                f"{cls.__name__} takes at most {len(_POSITIONAL)} positional arguments"
+            )
+        for name, value in zip(_POSITIONAL, args, strict=False):
+            if name in kwargs:
+                raise TypeError(f"{cls.__name__} got multiple values for {name!r}")
+            kwargs[name] = value
+
+        account_url = kwargs.get("account_url")
+        if account_url is not None:
+            if kwargs.get("account_name") or kwargs.get("account_domain"):
+                raise ValueError(
+                    "Give the account by account_url, or by account_name and "
+                    "account_domain: not both"
+                )
+            name, domain = parse_account_url(account_url)
+        elif kwargs.get("account_name"):
+            name, domain = check_account(
+                kwargs["account_name"], kwargs.get("account_domain") or DEFAULT_DOMAIN
+            )
+        else:
+            raise ValueError("The account is required: account_name, or account_url")
+        kwargs["account_name"], kwargs["account_domain"] = name, domain
+        return super().__call__(**kwargs)
+
+
+class _StripProtocol:
+    """`AbfsFileSystem._strip_protocol`: a classmethod, which on an instance checks a URL's account too.
+
+    fsspec strips paths both on the class, before a filesystem exists, and on
+    an instance. Only an instance knows its account, so only there is a URL of
+    another account refused.
+    """
+
+    def __get__(self, instance: Any, owner: type) -> Any:
+        def strip(path: Any) -> Any:
+            if isinstance(path, list):
+                return [strip(p) for p in path]
+            path = str(path)
+            if instance is not None:
+                account = account_of(path)
+                own = (instance.account_name, instance.account_domain)
+                if account is not None and account != own:
+                    raise ValueError(
+                        f"{path!r} is of the account {account[0]}.{account[1]}, not of "
+                        f"this filesystem's, {own[0]}.{own[1]}"
+                    )
+            return strip_protocol(path)
+
+        return strip
+
+
+class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     """An async fsspec filesystem of an Azure storage account, e.g. ADLS Gen2.
 
-    Its paths are ``<container>/<path>``, and its root lists the containers.
-    It takes ``abfs://`` and ``abfss://`` URLs, in adlfs' form,
+    Its paths are ``/<container>/<path>``, and its root, "/", lists the
+    containers. It makes no container: a container is made by Azure's own
+    means. It takes ``abfs://`` and ``abfss://`` URLs, in adlfs' form,
     ``abfs://<container>/<path>``, or Hadoop's,
-    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``. ``az://``
-    URLs are taken too.
+    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``, which must
+    name its own account. ``az://`` URLs are taken too.
 
     The recursive methods are the tree strategies of fsspec-alt-strategies.
     Their storage profile follows the account: see `HNS_PROFILE`,
     `NO_HNS_PROFILE` and `UNKNOWN_HNS_PROFILE`.
 
+    The account is ``account_name`` with ``account_domain``, or else
+    ``account_url``, not both. fsspec caches one filesystem per account,
+    credential and options, however the account is given.
+
     Parameters
     ----------
-    account_url : str
-        The account's dfs or blob endpoint, e.g.
-        ``https://<account>.dfs.core.windows.net/``, or Fabric OneLake's
-        ``https://onelake.dfs.fabric.microsoft.com/``.
+    account_name : str, optional
+        The account's name, e.g. ``myaccount``.
     credential : AsyncTokenCredential or str, optional
         An async token credential, or a string naming one, a SAS token or a
         shared key, as `StorageCredential.from_credential` reads it. None is
         anonymous. A token credential given is the caller's to close. One made
         from a string is the file system's, closed by `close`.
+    account_domain : {"core.windows.net", "fabric.microsoft.com"}, optional
+        The account's domain: Azure's, the default, or Fabric OneLake's.
+    account_url : str, optional
+        The account's dfs or blob endpoint, in place of ``account_name`` and
+        ``account_domain``, e.g. ``https://<account>.dfs.core.windows.net/``,
+        or Fabric OneLake's ``https://onelake.dfs.fabric.microsoft.com/``.
     is_hns_enabled : bool, optional
         Whether the account has a hierarchical namespace, as Azure's account
         information names it. None asks the account on first need: see
@@ -204,21 +290,27 @@ class AbfsFileSystem(TreeFileSystem):
     Raises
     ------
     ValueError
-        If ``account_url`` is no account endpoint.
+        If no account is given, or it is given both ways, or ``account_url`` is
+        no account endpoint, or ``account_name`` or ``account_domain`` is none
+        Azure takes.
 
     Examples
     --------
     >>> from azure.identity.aio import DefaultAzureCredential
     >>> fs = AbfsFileSystem(
-    ...     "https://myaccount.dfs.core.windows.net/",
+    ...     "myaccount",
     ...     credential=DefaultAzureCredential(),
     ...     is_hns_enabled=True,
     ... )
-    >>> fs.ls("mycontainer/data")
+    >>> fs.ls("/mycontainer/data")
     """
 
     protocol: ClassVar[tuple[str, ...]] = ("abfs", "abfss")
-    root_marker = ""
+    root_marker = "/"
+
+    # The account is in the key as account_name and account_domain, which the
+    # metaclass makes of an account_url.
+    _strip_tokenize_options: ClassVar[tuple[str, ...]] = ("account_url",)
 
     operation_concurrency: int = 100
     """The default of the strategies' requests at a time.
@@ -235,15 +327,19 @@ class AbfsFileSystem(TreeFileSystem):
 
     def __init__(
         self,
-        account_url: str,
+        account_name: str | None = None,
         credential: Any = None,
         *,
+        account_domain: AccountDomain | None = None,
+        account_url: str | None = None,
         is_hns_enabled: bool | None = None,
         operation_concurrency: int | asyncio.Semaphore | None = None,
         io_concurrency: int | asyncio.Semaphore | None = None,
         **storage_options: Any,
     ) -> None:
-        self.account_name, self.account_domain = parse_account_url(account_url)
+        # The metaclass made account_name and account_domain, of account_url too.
+        self.account_name: str = account_name  # type: ignore[assignment]
+        self.account_domain: AccountDomain = account_domain or DEFAULT_DOMAIN
         # The endpoints the clients are made on, at first use.
         self._dfs_url = f"https://{self.account_name}.dfs.{self.account_domain}"
         self._blob_url = f"https://{self.account_name}.blob.{self.account_domain}"
@@ -273,18 +369,16 @@ class AbfsFileSystem(TreeFileSystem):
 
     # Paths.
 
-    @classmethod
-    def _strip_protocol(cls, path: Any) -> Any:
-        if isinstance(path, list):
-            return [cls._strip_protocol(p) for p in path]
-        return strip_protocol(str(path))
+    _strip_protocol = _StripProtocol()
 
     @staticmethod
     def _get_kwargs_from_urls(path: str) -> dict[str, Any]:
         # A Hadoop-style URL names its account: fsspec.open() then needs no
-        # account_url.
-        account_url = account_url_of(path)
-        return {"account_url": account_url} if account_url else {}
+        # account_name.
+        account = account_of(path)
+        if account is None:
+            return {}
+        return {"account_name": account[0], "account_domain": account[1]}
 
     # The clients.
 
@@ -469,7 +563,7 @@ class AbfsFileSystem(TreeFileSystem):
             if not key:
                 props = await container_client.get_container_properties()
                 return {
-                    **_folder_entry(container),
+                    **_folder_entry(f"/{container}"),
                     "last_modified": props.last_modified,
                     "etag": props.etag,
                 }
@@ -500,19 +594,8 @@ class AbfsFileSystem(TreeFileSystem):
         path = self._strip_protocol(path)
         container, key = split_path(path)
         if not container:
-            with azure_errors(path):
-                async for c in self._blob_service().list_containers():
-                    yield {
-                        **_folder_entry(c.name),
-                        "last_modified": c.last_modified,
-                        "etag": c.etag,
-                    }
-                    if recursive:
-                        async for entry in self._ils(c.name, recursive=True):
-                            yield entry
-            return
-
-        if (await self._account_profile(container)).implicit_directories is False:
+            listing = self._ils_containers(recursive)
+        elif (await self._account_profile(container)).implicit_directories is False:
             listing = self._ils_dfs(container, key, recursive)
         else:
             listing = self._ils_blob(container, key, recursive)
@@ -523,20 +606,36 @@ class AbfsFileSystem(TreeFileSystem):
                 listed = True
                 yield entry
         except AzureError as e:
-            if listed:
+            if listed or not container:
                 raise os_error(e, path) from e
             # A file lists as itself, as fsspec's _ls lists it.
-            entry = await self._info(path)
-            if entry["type"] == "directory":
-                raise os_error(e, path) from e
-            yield entry
+            yield await self._file_itself(path, e)
             return
 
-        if not listed:
+        if not listed and container:
             # Nothing listed: an empty folder, a file, or nothing at all.
             entry = await self._info(path)
             if entry["type"] != "directory":
                 yield entry
+
+    async def _file_itself(self, path: str, error: AzureError) -> dict[str, Any]:
+        """The entry of a file whose listing failed, as fsspec's _ls lists a file; else the listing's error."""
+        entry = await self._info(path)
+        if entry["type"] == "directory":
+            raise os_error(error, path) from error
+        return entry
+
+    async def _ils_containers(self, recursive: bool) -> AsyncIterator[dict[str, Any]]:
+        """The containers at the root, each followed by all in it when ``recursive``: depth first."""
+        async for c in self._blob_service().list_containers():
+            yield {
+                **_folder_entry(f"/{c.name}"),
+                "last_modified": c.last_modified,
+                "etag": c.etag,
+            }
+            if recursive:
+                async for entry in self._ils(f"/{c.name}", recursive=True):
+                    yield entry
 
     async def _ils_dfs(
         self, container: str, key: str, recursive: bool = False
@@ -544,7 +643,7 @@ class AbfsFileSystem(TreeFileSystem):
         """One folder's paths, or all below it, from the Data Lake API, a page at a time."""
         file_system = self._dfs_service().get_file_system_client(container)
         async for p in file_system.get_paths(path=key or None, recursive=recursive):
-            name = f"{container}/{p.name}"
+            name = f"/{container}/{p.name}"
             if p.is_directory:
                 yield {
                     **_folder_entry(name),
@@ -586,7 +685,7 @@ class AbfsFileSystem(TreeFileSystem):
             if item.name == prefix:
                 continue  # The folder's own marker blob.
             if item.name.endswith("/"):  # A prefix.
-                entry = _folder_entry(f"{container}/{item.name}")
+                entry = _folder_entry(f"/{container}/{item.name}")
             else:
                 entry = _blob_entry(container, item)
             if entry["type"] == "directory":
@@ -646,6 +745,12 @@ class AbfsFileSystem(TreeFileSystem):
                 # A folder with no blob of its own is gone with its last blob.
 
     async def _makedirs(self, path: str, exist_ok: bool = False) -> None:
+        """Make a folder and its missing parents, in an existing container.
+
+        No container is made: a folder in a missing one raises
+        FileNotFoundError, and a container missing itself PermissionError.
+        Containers are made by Azure's own means, with their settings.
+        """
         path = self._strip_protocol(path)
         container, key = split_path(path)
         if not container:
@@ -656,7 +761,10 @@ class AbfsFileSystem(TreeFileSystem):
         try:
             info = await self._info(path)
         except FileNotFoundError:
-            pass
+            if not key:
+                raise PermissionError(
+                    errno.EPERM, "AbfsFileSystem makes no container", path
+                ) from None
         else:
             if info["type"] != "directory":
                 raise FileExistsError(errno.EEXIST, "A file exists", path)
@@ -664,13 +772,8 @@ class AbfsFileSystem(TreeFileSystem):
                 raise FileExistsError(errno.EEXIST, "File exists", path)
             return
 
-        blob_service, dfs_service = self._blob_service(), self._dfs_service()
+        dfs_service = self._dfs_service()
         with azure_errors(path):
-            with contextlib.suppress(ResourceExistsError):
-                await blob_service.create_container(container)
-            if not key:
-                return
-
             implicit = (await self._account_profile(container)).implicit_directories
             if implicit is False:
                 await dfs_service.get_directory_client(
@@ -683,7 +786,10 @@ class AbfsFileSystem(TreeFileSystem):
                 await self._blob(container, key).upload_blob(
                     b"", metadata={"hdi_isfolder": "true"}, overwrite=True
                 )
-            # Without a hierarchical namespace, a folder is made by its files.
+            else:
+                # Without a hierarchical namespace, a folder is made by its
+                # files: nothing is sent, but a missing container is told.
+                await self._info(f"/{container}")
 
     async def _cp_file(self, path1: str, path2: str, **kwargs: Any) -> None:
         """Copy a blob on the server, waiting for the copy if it is pending.
@@ -768,10 +874,11 @@ class AbfsFileSystem(TreeFileSystem):
             await self._rm_file(path1)
             return
 
-        # A rename creates no parent: the strategies create it first.
-        source = self._dfs_service().get_file_client(*split_path(path1))
+        # A rename creates no parent: the strategies create it first. Its new
+        # name is "<container>/<path>", without the leading "/".
+        source = self._dfs_service().get_file_client(c1, k1)
         with azure_errors(path1):
-            await source.rename_file(path2)
+            await source.rename_file(f"{c2}/{k2}")
 
     # Files.
 

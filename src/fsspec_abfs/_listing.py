@@ -120,7 +120,7 @@ def entries(container: str, body: bytes, prefix: str) -> list[dict[str, Any]]:
         get = (lambda tag: None) if properties is None else properties.findtext
         modified = get("Last-Modified")
         common = {
-            "name": f"{container}/{name.rstrip('/')}",
+            "name": f"/{container}/{name.rstrip('/')}",
             "last_modified": parsedate_to_datetime(modified) if modified else None,
             "etag": get("Etag"),
         }
