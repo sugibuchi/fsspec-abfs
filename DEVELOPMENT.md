@@ -14,6 +14,7 @@ with no account and no credentials.
 ```bash
 uv run pytest                     # all tests, on the dummy server, with and without HNS
 uv run pytest --api=live          # the filesystem tests on live accounts
+uv run pytest --api=live -v -o console_output_style=times --durations=20   # with each test's duration, as CI runs them
 uv run pytest --api=both          # on both
 uv run pytest --hns=true          # only accounts with a hierarchical namespace: true, false or both
 uvx ruff check .                  # lint
@@ -52,7 +53,7 @@ side only:
 - A test taking `dummy` runs on the dummy server only. It switches the server's behaviour, or counts the requests
   it served.
 - The `dummy_only`, `live_only`, `hns_only` and `flat_only` markers restrict the others.
-- A test is skipped when the options exclude its side.
+- A test of a side the options exclude is deselected: a live run lists the live tests only.
 
 ### The dummy server
 
@@ -151,8 +152,10 @@ Only live tests check what the dummy assumes, and what it does not model:
 `ci.yaml` has three jobs:
 
 - `lint`: ruff check, ruff format check, zizmor and actionlint;
-- `test`: pytest `--api=dummy` on Python 3.11 to 3.14, with no credentials, and coverage to Codecov from 3.14;
-- `live`: after `test`, pytest `--api=live` on Python 3.14, in the GitHub environment `azure`.
+- `test`: pytest `--api=dummy` on Python 3.11 to 3.14, with no credentials. Python 3.14's coverage and test results go
+  to Codecov, the results flagged `dummy`;
+- `live`: after `test`, pytest `--api=live` on Python 3.14, in the GitHub environment `azure`. It prints each test's
+  duration and the 20 slowest, and its results go to Codecov's test analytics, flagged `live`.
 
 `live` runs on pushes, by hand, and on pull requests from branches of this repository. Pull requests from forks and
 Dependabot get no environment, so they run `test` only. An environment without `AZURE_CLIENT_ID` is skipped with a

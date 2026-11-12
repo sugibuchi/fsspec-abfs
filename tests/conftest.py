@@ -64,6 +64,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "live_only: runs on live accounts only",
         "hns_only: runs on an account with a hierarchical namespace only",
         "flat_only: runs on an account without a hierarchical namespace only",
+        "not_chosen: of a side the options exclude, deselected",
     ):
         config.addinivalue_line("markers", marker)
 
@@ -84,8 +85,8 @@ def _parametrize(
     metafunc: pytest.Metafunc, name: str, chosen: list, only: Any, ids: Any
 ) -> None:
     if only is not None and only not in chosen:
-        reason = f"{ids(only)} only, not chosen by the options"
-        values = [pytest.param(only, marks=pytest.mark.skip(reason=reason))]
+        # Deselected by pytest_collection_modifyitems: a run lists only what it can run.
+        values = [pytest.param(only, marks=pytest.mark.not_chosen)]
     else:
         values = [only] if only is not None else chosen
     metafunc.parametrize(name, values, ids=ids, scope="session")
@@ -110,6 +111,20 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
             _choice(metafunc.config, "--hns", "FSSPEC_ABFS_TEST_HNS", _HNS, "both")
         ]
         _parametrize(metafunc, "hns", chosen, only, lambda v: "hns" if v else "flat")
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Deselect the tests of a side the options exclude, e.g. the dummy server's in a live run.
+
+    They are reported as deselected, not skipped one by one: a verbose live run then
+    lists the live tests only.
+    """
+    excluded = [item for item in items if item.get_closest_marker("not_chosen")]
+    if excluded:
+        config.hook.pytest_deselected(items=excluded)
+        items[:] = [item for item in items if not item.get_closest_marker("not_chosen")]
 
 
 # The dummy server.

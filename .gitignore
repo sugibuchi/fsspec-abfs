@@ -28,6 +28,7 @@ env/
 .coverage.*
 htmlcov/
 coverage.xml
+junit.xml
 .hypothesis/
 .mypy_cache/
 .ruff_cache/

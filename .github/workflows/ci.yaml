@@ -1,10 +1,12 @@
 # Lint the code and the workflows, and test, on every push to main and pull
 # request. The offline tests run on the dummy server, with no credentials, on
-# every supported Python version. The coverage is uploaded to Codecov from one
-# Python version: uploading needs the repository secret CODECOV_TOKEN.
+# every supported Python version. The coverage and the test results are
+# uploaded to Codecov from one Python version: uploading needs the repository
+# secret CODECOV_TOKEN.
 #
 # The live tests then run on Azure, in the GitHub environment `azure`, which
 # DEVELOPMENT.md describes. An environment without AZURE_CLIENT_ID is skipped.
+# Their results, with each test's runtime, go to Codecov's test analytics.
 name: CI
 
 on:
@@ -66,7 +68,10 @@ jobs:
 
       # The dummy server only, whatever a variable says: this job has no credentials.
       - name: Test with coverage
-        run: uv run --no-sync pytest --api=dummy --cov --cov-report=term --cov-report=xml:coverage.xml
+        # junit.xml in the legacy JUnit form, which Codecov's test analytics reads.
+        run: >-
+          uv run --no-sync pytest --api=dummy --cov --cov-report=term --cov-report=xml:coverage.xml
+          --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() && matrix.python-version == '3.14' }}
@@ -74,6 +79,15 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() && matrix.python-version == '3.14' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          files: junit.xml
+          flags: dummy
 
   live:
     needs: test
@@ -149,4 +163,19 @@ jobs:
         if: ${{ steps.configured.outputs.ok == 'true' }}
         env:
           HNS: ${{ steps.configured.outputs.hns }}
-        run: bash .github/scripts/with-id-token-file.sh uv run --no-sync pytest --api=live --hns="$HNS"
+        # Each test's line with its duration, and the slowest at the end. junit.xml,
+        # in the legacy JUnit form, which Codecov's test analytics reads.
+        run: >-
+          bash .github/scripts/with-id-token-file.sh uv run --no-sync pytest --api=live --hns="$HNS"
+          -v -o console_output_style=times --durations=20
+          --junitxml=junit.xml -o junit_family=legacy
+
+      # Also after failed tests, whose runtimes count too.
+      - name: Upload the live test results to Codecov
+        if: ${{ !cancelled() && steps.configured.outputs.ok == 'true' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          files: junit.xml
+          flags: live
