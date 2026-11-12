@@ -287,11 +287,16 @@ code only: Azure's own messages may quote request URLs, with a SAS token in them
 ### Picklable
 
 File systems are pickled to run in other processes, e.g. by Dask. fsspec pickles a file system as its constructor
-arguments, and unpickling calls the constructor again:
+arguments, and unpickling calls the constructor again. Nothing a file system made is pickled: the service clients and
+the token credentials hold aiohttp sessions, bound to an event loop of this process.
 
-- the clients are not pickled, and are made again on first use;
-- a credential given as a string is made again;
-- a credential object must be picklable itself.
+- `credential` and `credential_options` keep the credential and the options as given. The clients never use them.
+- The credential the clients take, a `StorageCredential`, is the private `__credential`. `_get_credential` makes it
+  at first need, of those two: an unpickled file system makes its own.
+- The clients are made again on first use, and the private `__user_delegation_key` asked for again.
+- `loop` is left out of the arguments pickled, e.g. an account's file system's of `AbfsFileSystems`: an unpickled sync
+  file system takes fsspec's.
+- A credential object given is pickled as it is: it must pickle itself. A string naming one always does.
 
 ### Known limits
 

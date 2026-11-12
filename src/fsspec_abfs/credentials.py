@@ -97,11 +97,46 @@ class StorageCredential:
         ValueError
             If a string is none of these.
         """
+        kind = cls.kind_of(credential)
+        if kind == "TokenCredential" and isinstance(credential, str):
+            class_name = TOKEN_CREDENTIALS.get(credential, credential)
+            return cls(kind, _make(_load(class_name), options))
+        elif kind == "SAS":
+            return cls(kind, credential.removeprefix("?"))
+        elif kind == "Anonymous":
+            return cls(kind, None)
+        else:
+            return cls(kind, credential)
+
+    @staticmethod
+    def kind_of(credential: Any) -> CredentialKind:
+        """The kind of credential that ``credential`` gives, checked as `from_credential` checks it, but made of nothing.
+
+        A file system checks its credential when it is made, and makes it at
+        first need. A class named is imported, to check it.
+
+        Parameters
+        ----------
+        credential : AsyncTokenCredential or str
+            As `from_credential` takes it.
+
+        Returns
+        -------
+        {"TokenCredential", "SAS", "SharedKey", "Anonymous"}
+
+        Raises
+        ------
+        TypeError
+            If ``credential`` is none of the values `from_credential` takes,
+            or a sync token credential.
+        ValueError
+            If a string is none of them.
+        """
         if isinstance(credential, AsyncTokenCredential):
-            return cls("TokenCredential", credential)
+            return "TokenCredential"
 
         if credential == _ANONYMOUS:
-            return cls("Anonymous", None)
+            return "Anonymous"
 
         if not isinstance(credential, str):
             raise TypeError(
@@ -110,12 +145,12 @@ class StorageCredential:
             )
 
         if credential in TOKEN_CREDENTIALS or _is_class_name(credential):
-            class_name = TOKEN_CREDENTIALS.get(credential, credential)
-            return cls("TokenCredential", _make(_load(class_name), options))
+            _load(TOKEN_CREDENTIALS.get(credential, credential))
+            return "TokenCredential"
         if _is_sas_token(credential):
-            return cls("SAS", credential.removeprefix("?"))
+            return "SAS"
         if _is_shared_key(credential):
-            return cls("SharedKey", credential)
+            return "SharedKey"
 
         # The value itself is never quoted: it may be a secret.
         raise ValueError(

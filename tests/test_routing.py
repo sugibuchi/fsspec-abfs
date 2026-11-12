@@ -182,16 +182,16 @@ def test_an_account_takes_its_own_arguments() -> None:
         skip_instance_cache=True,
     )
     opendata = fs.filesystem("opendata")
-    assert opendata.credential.kind == "Anonymous"
+    assert opendata.credential == "anonymous"
     assert (opendata.operation_concurrency, opendata.io_concurrency) == (7, 3)
 
     fab = fs.filesystem("fab", "fabric.microsoft.com")
-    assert fab.credential.value is token
+    assert fab.credential is token
     assert fab.is_hns_enabled is True
 
     # Any other account takes the defaults: the shared credential object, and the concurrency.
     other = fs.filesystem("other")
-    assert other.credential.value is token
+    assert other.credential is token
     assert (other.operation_concurrency, other.io_concurrency) == (7, 5)
     assert fs.filesystem("other") is other
 
@@ -200,22 +200,28 @@ def test_a_credential_named_takes_its_options() -> None:
     fs = AbfsFileSystems(
         credential="azure-cli", tenant_id="t", skip_instance_cache=True
     )
-    credential = fs.credential.value
+    # Kept as given, and made at first need.
+    assert fs.credential == "azure-cli"
+    assert fs.credential_options["tenant_id"] == "t"
+    assert fs._AbfsFileSystems__credential is None
+    credential = fs._get_credential().value
     assert credential.tenant_id == "t"
     # Made once by the router, shared by the accounts, which do not close it.
     for name in ("one", "two"):
         inner = fs.filesystem(name)
-        assert inner.credential.value is credential
-        assert not inner._owns_credential
-    assert fs._owns_credential
+        assert inner.credential is credential
+        assert inner._get_credential().value is credential
+        assert not inner._owns_credential()
     asyncio.run(credential.close())
 
 
 def test_a_credential_object_is_the_callers() -> None:
     token = _Token()
     fs = AbfsFileSystems(credential=token, skip_instance_cache=True)
-    assert fs.credential.value is token
-    assert not fs._owns_credential
+    assert fs.credential is token
+    assert fs._get_credential().value is token
+    inner = fs.filesystem("one")
+    assert not inner._owns_credential()
 
 
 def test_a_closed_router_refuses_calls() -> None:
@@ -347,7 +353,9 @@ async def test_sign(make_router) -> None:
 async def test_sign_with_a_user_delegation_key() -> None:
     fs = _keyed()
     # By the key kept: no request.
-    fs._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(days=1))
+    fs._AbfsFileSystem__user_delegation_key = _delegation_key(
+        datetime.now(UTC) + timedelta(days=1)
+    )
     signed = await fs._sign("/c/x.txt", expiration=600)
     assert "skoid=" in signed
     assert "sp=r&" in signed
@@ -488,7 +496,9 @@ async def test_user_delegation_key_is_kept() -> None:
 
 async def test_user_delegation_key_is_renewed_near_its_expiry() -> None:
     fs = _keyed()
-    fs._user_delegation_key = _delegation_key(datetime.now(UTC) + timedelta(hours=1))
+    fs._AbfsFileSystem__user_delegation_key = _delegation_key(
+        datetime.now(UTC) + timedelta(hours=1)
+    )
     await fs._get_user_delegation_key()
     assert len(fs.asked) == 1
 

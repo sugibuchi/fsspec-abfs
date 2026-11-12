@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import pytest
 from azure.identity import AzureCliCredential as SyncAzureCliCredential
@@ -134,5 +135,46 @@ async def test_the_file_system_takes_them_from_its_storage_options() -> None:
         asynchronous=True,
         skip_instance_cache=True,
     )
-    assert fs.credential.value.tenant_id == "t"
-    await fs.credential.value.close()
+    assert fs.credential == "azure-cli"
+    credential = fs._get_credential()
+    assert credential.value.tenant_id == "t"
+    # Made once.
+    assert fs._get_credential() is credential
+    await credential.value.close()
+
+
+@pytest.mark.parametrize(
+    ("value", "kind"),
+    [
+        ("default", "TokenCredential"),
+        ("azure.identity.aio.AzureCliCredential", "TokenCredential"),
+        ("anonymous", "Anonymous"),
+        (_SAS, "SAS"),
+        (_KEY, "SharedKey"),
+    ],
+)
+def test_kind_of_makes_nothing(value: str, kind: str) -> None:
+    assert StorageCredential.kind_of(value) == kind
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (None, TypeError),
+        ("azure.identity.AzureCliCredential", TypeError),
+        ("azure.identity.aio.NoSuchCredential", ValueError),
+        ("s3cret-value", ValueError),
+    ],
+)
+def test_kind_of_refuses_as_from_credential(value: Any, error: type) -> None:
+    with pytest.raises(error):
+        StorageCredential.kind_of(value)
+
+
+def test_the_file_system_checks_its_credential_when_made() -> None:
+    from fsspec_abfs.abfs import AbfsFileSystem  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="neither"):
+        AbfsFileSystem(
+            account_name="acct", credential="s3cret-value", skip_instance_cache=True
+        )

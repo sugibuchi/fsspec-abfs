@@ -141,6 +141,39 @@ fs = AbfsFileSystem(account_name="myaccount", credential="sv=...&sig=...")
 A credential made from a keyword or a class name is closed with the file system. Sync credentials, of
 `azure.identity` rather than `azure.identity.aio`, are refused: the file system's clients are async.
 
+### Pickling, e.g. with Dask
+
+Dask and other frameworks that run tasks in other processes pickle the file system with each task. A file system is
+pickled as the arguments it was made with, `credential` and its options included. Unpickling calls the constructor
+again. Nothing the file system made is pickled: not its clients, not the credential object it made from a keyword, and
+not its event loop. Each worker makes its own when it first needs them, and fsspec's cache keeps one file system per
+set of arguments in each worker.
+
+So, on a cluster, **give the credential as a string**, a keyword or a class name, with its options:
+
+```python
+import dask.dataframe as dd
+
+df = dd.read_parquet(
+    "abfss://raw@myaccount.dfs.core.windows.net/data/table",
+    storage_options={"credential": "managed-identity", "client_id": "..."},
+)
+```
+
+- **Each worker authenticates on its own.** The identity must be available on every worker, not only on the client
+  that builds the graph:
+  - `"managed-identity"` or `"workload-identity"`: the identity of the VM, the container or the pod each worker runs in.
+  - `"environment"`: `AZURE_CLIENT_ID` and the other variables `EnvironmentCredential` reads, set on each worker.
+  - `"default"`: whichever of these the worker has.
+  - `"azure-cli"` needs `az login` on each worker, which a cluster rarely has.
+- **The options travel with every task.** A `client_secret`, a SAS token or a shared key given as an argument is in
+  the pickled task graph, and in anything that logs or stores it. `"managed-identity"`, `"workload-identity"` and
+  `"environment"` keep secrets out of the graph.
+- **Avoid passing a credential object.** It is pickled as it is, with whatever it holds: its secrets, and once used,
+  its tokens and its HTTP session, which may not pickle at all. Each worker gets a copy that it treats as the caller's,
+  so the worker never closes it.
+- `AbfsFileSystems` is pickled the same way: give its default credential, and those in `accounts`, as strings.
+
 ---
 
 ## Paths
