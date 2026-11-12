@@ -216,7 +216,9 @@ The URL carries a SAS reading that file only. How it is signed depends on the cr
 | SAS              | The credential's own SAS, valid as long as it is                         |
 | Anonymous        | Nothing: the file must be public                                         |
 
-A user delegation key is asked for once, valid for a day, and kept. It needs a role at the account's level: see
+A user delegation key is asked for once, valid for a day, and kept. A new one is asked for when the kept one has less
+than 12 hours left. Asking for one needs a role at the account's level, e.g. Storage Blob Data Reader, Contributor or
+Delegator: a role on a container only is refused. See
 [Assign permissions with Azure RBAC](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac).
 
 ### Containers
@@ -298,8 +300,8 @@ memory until then.
 Limits:
 
 - The files are committed one after another. A transaction is not atomic across files.
-- Only files written with `open` join the transaction. Copies, moves and deletes take effect at once.
-- Files opened with `open_async` take no part in the transaction.
+- Only files written with `open` join the transaction, not those of `open_async`.
+- Copies, moves and deletes take effect at once.
 - If the process dies, uploaded blocks stay uncommitted until Azure drops them, after a week.
 
 ---
@@ -337,8 +339,8 @@ fs.ls("abfss://raw@myaccount.dfs.core.windows.net/data")
 It takes Spark's and Hadoop's URLs only: `abfss://<container>@<account>.dfs.<domain>/<path>`, or `abfs://`. Any
 other path raises `ValueError`, as it names no account.
 
-The URLs are its paths, protocol included. `ls`, `info`, `find` and `glob` answer full URLs, always `abfss://`, in
-lower case, without a trailing `/`.
+The URLs are its paths, protocol included. `ls`, `info`, `find` and `glob` answer full URLs, always `abfss://`, without
+a trailing `/`. Their account and container are in lower case, as Azure names them.
 
 ### Options
 
@@ -373,28 +375,17 @@ one, `transfer_concurrency` at a time, as `cross_account_copy` says:
 | `"streaming"`        | Read and written through this process, a block at a time        | Reading the source, and writing the destination        |
 | `"server-side"`      | Copied by the destination's account from the source's URL       | The source's URL readable by the destination's account |
 
-With `"server-side"`, the source's URL carries what lets the destination's account read it:
+With `"server-side"`, the source's URL is its [signed URL](#signed-urls), as `sign` gives it. A SAS signed for the copy
+is valid for 12 hours, so that a long copy keeps reading its source.
 
-- with a token credential, a user delegation SAS, reading that file only;
-- with a SAS, the source's own SAS;
-- with a shared key, a SAS signed by the key;
-- anonymous, nothing: the source must be public.
-
-A user delegation SAS needs a key that the identity asks the source account for. That needs a role at the source
-account's level, e.g. Storage Blob Data Reader, Contributor or Delegator: a role on a container only is refused. See
-[Assign permissions with Azure RBAC](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac).
-The key is kept for a day, and asked for again with less than 12 hours left. Each SAS is valid until its key expires, so
-that a long copy keeps reading its source.
-
-With `"server-side"`, check two things before a copy, as a copy that cannot read its source fails:
+No copy falls back on streaming: a copy whose source the destination cannot read fails. With `"server-side"`, check two
+things before a copy:
 
 1. With a Microsoft Entra ID token credential, the identity needs a role giving the action
-   `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey` at the source account's level. See
-   [Assign permissions with Azure RBAC](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas#assign-permissions-with-rbac).
+   `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey` at the source account's level, as
+   [Signed URLs](#signed-urls) says.
 2. The destination account reads the source over the network itself. The source account must be reachable from it,
    through the network routing settings, the network security groups and the source account's firewall.
-
-No copy falls back on streaming: a source the destination cannot read fails its copy.
 
 A move between two accounts copies each file, then deletes it. A source whose copy failed is kept.
 

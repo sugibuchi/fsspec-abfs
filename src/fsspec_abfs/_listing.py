@@ -1,13 +1,13 @@
 """A container's blobs below a prefix, by ListBlobs without a delimiter, the next page asked for while one is parsed.
 
 The SDK's pager parses a whole page into ``BlobProperties`` before its continuation token exists, so each page costs
-the service's time to answer it, then the client's to parse it, one after another. Measured on Azure Open Datasets, a
-page of 5000 blobs took about 0.4 s to answer and 0.55 s to parse.
+the service's time to answer it, then the client's to parse it, one after another. On Azure, a page of 5000 blobs takes
+about 0.4 s to answer, and 0.55 s to parse.
 
 This sends ListBlobs itself, through the container client's own pipeline, with its credential and policies. It finds
 ``<NextMarker>`` in a page's raw XML, asks for the next page at once, then parses the page into fsspec entries with
-``xml.etree``, in a thread, while the next page comes. The entries are those `AbfsFileSystem._ils` makes from the SDK's
-``BlobProperties``.
+``xml.etree``, in a thread, while the next page comes. The entries are those `AbfsFileSystem` makes from the SDK's
+``BlobProperties``, their ETags bare: see `bare_etag`.
 """
 
 from __future__ import annotations

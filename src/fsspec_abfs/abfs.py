@@ -10,9 +10,9 @@ Azure's two APIs of one account:
   (HNS) has: real folders, listings of one folder, atomic renames and
   recursive deletes.
 
-Whether the account has a hierarchical namespace is declared, or asked once
-known for sure. While unknown, the filesystem takes the way right on both
-kinds: the blob API, and moves by copy and delete.
+Whether the account has a hierarchical namespace is declared to the
+constructor, or else asked once. While it is unknown, the filesystem takes the
+way right on both kinds: the blob API, and moves by copy and delete.
 """
 
 from __future__ import annotations
@@ -293,11 +293,14 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
     Its paths are ``/<container>/<path>``, and its root, "/", lists the
     containers. It makes no container: a container is made by Azure's own
-    means. It takes the URLs adlfs takes: Hadoop's,
-    ``abfss://<container>@<account>.dfs.core.windows.net/<path>``, adlfs' own,
-    ``abfs://<container>/<path>`` or ``az://<container>/<path>``, both without
-    their protocol, and the endpoints', ``https://<account>.dfs...``. Its
-    operations refuse a URL of another account: see `split_path`.
+    means. It takes the URLs adlfs takes:
+
+    - Hadoop's, ``abfss://<container>@<account>.dfs.core.windows.net/<path>``,
+      with or without its protocol;
+    - adlfs' own, ``abfs://<container>/<path>`` or ``az://<container>/<path>``;
+    - the endpoints', ``https://<account>.dfs.core.windows.net/<container>/<path>``.
+
+    Its operations refuse a URL of another account: see `split_path`.
     `unstrip_protocol` gives a path's URL in Hadoop's form.
 
     The recursive methods are the tree strategies of fsspec-alt-strategies.
@@ -329,9 +332,11 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         information names it. None asks the account on first need: see
         `is_hns_enabled`.
     operation_concurrency : int or asyncio.Semaphore, optional
-        The strategies' requests at a time, e.g. listings and deletions.
+        The strategies' requests at a time, e.g. listings and deletions: 100
+        by default.
     io_concurrency : int or asyncio.Semaphore, optional
-        The range reads and block uploads at a time, of all files opened.
+        The range reads and block uploads at a time, of all files opened: 16
+        by default.
     **storage_options
         Passed to `fsspec.asyn.AsyncFileSystem`, e.g. ``asynchronous=True``. A
         token credential a string names takes its own from them, e.g.
@@ -342,7 +347,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     ValueError
         If no account is given, or it is given both ways, or ``account_url`` is
         no account endpoint, or ``account_name`` or ``account_domain`` is none
-        Azure takes.
+        Azure takes. Also if ``credential`` is a string of none of the forms
+        `StorageCredential.from_credential` reads.
     TypeError
         If ``credential`` is neither an async token credential nor a string,
         e.g. None.
@@ -384,9 +390,9 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     _user_delegation_key_margin: timedelta = timedelta(hours=12)
     """How long a kept user delegation key must still be valid: else a new one is asked for.
 
-    A copy from another account reads its source while it runs, so the source's
-    SAS must outlive it. Each SAS is valid until its key expires, so at least as
-    long as this.
+    A copy from another account reads its source while it runs, so the
+    source's SAS must outlive it. `AbfsFileSystems` signs that SAS for this
+    long, which a key kept always covers.
     """
 
     def __init__(
@@ -971,20 +977,47 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             return key
 
     async def _sign(self, path: str, expiration: int = 100, **kwargs: Any) -> str:
-        """A blob's URL that reads it with no other credential, for ``expiration`` seconds.
+        """A blob's URL that reads it with no other credential, e.g. for a browser or another service.
 
-        What the URL carries depends on the credential:
+        It is the URL of the blob endpoint, as another account's server-side
+        copy takes it. What the URL carries depends on the credential:
 
-        - a token credential signs a user delegation SAS, with the account's
-          key, see `_get_user_delegation_key`;
+        - a token credential signs a user delegation SAS with the account's
+          user delegation key, which is asked for once and kept;
         - a shared key signs a SAS;
         - a SAS is the URL's own, valid as long as it is;
         - anonymous, the URL carries nothing: the blob must be public.
 
-        A SAS signed here reads that blob only. One of a user delegation key
-        expires with the key at the latest: 12 hours, at least, by
-        `_user_delegation_key_margin`. It is the URL of the blob endpoint, as
-        another account's server-side copy takes it.
+        A SAS signed here reads that blob only.
+
+        Parameters
+        ----------
+        path : str
+            The blob's path or URL.
+        expiration : int, default 100
+            How long a SAS signed here is valid, in seconds. One of a user
+            delegation key expires with the key at the latest, at least 12
+            hours away.
+        **kwargs
+            Ignored, as by fsspec's ``sign``.
+
+        Returns
+        -------
+        str
+            The blob's URL, with its SAS if any.
+
+        Raises
+        ------
+        IsADirectoryError
+            If ``path`` is a container or the root.
+        PermissionError
+            If the identity may not ask for a user delegation key, e.g. with a
+            role on a container only.
+
+        Examples
+        --------
+        >>> fs.sign("/mycontainer/data/file.csv", expiration=3600)
+        'https://myaccount.blob.core.windows.net/mycontainer/data/file.csv?skoid=...&sig=...'
         """
         container, key = self.split_path(path)
         path = self._strip_protocol(path)
@@ -1083,10 +1116,11 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     ) -> bytes:
         """Read a blob, or a range of it, by one download, with no properties read first.
 
-        The SDK asks a range by its offsets, so a start or an end counted from the end of the file needs the file's
-        size first. A missing blob raises FileNotFoundError from the download's 404. A directory is a marker blob with a
-        hierarchical namespace, or no blob without one: it raises IsADirectoryError or FileNotFoundError, as
-        `_open_file` does.
+        The SDK asks a range by its offsets, so a start or an end counted from
+        the end of the file needs the file's size first. A missing blob raises
+        FileNotFoundError from the download's 404. A folder is a marker blob
+        with a hierarchical namespace, or no blob without one: it raises
+        IsADirectoryError or FileNotFoundError, as `_open_file` does.
         """
         container, key = self.split_path(path)
         path = self._strip_protocol(path)
@@ -1111,8 +1145,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             async with self.io_limit:
                 try:
                     # The SDK fetches beyond its first 32 MiB in 4 MiB chunks, one at a
-                    # time by default: a whole 132 MiB file took 27 rounds. They go at
-                    # once, as many as the readers' spread, under this one permit.
+                    # time by default, so a large file costs many round trips. They go
+                    # at once, as many as the readers' spread, under this one permit.
                     downloader = await self._blob(container, key).download_blob(
                         offset=None if start == 0 and end is None else start,
                         length=length,
@@ -1124,7 +1158,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                             b""  # Beyond the end: nothing, as fsspec's slicing gives.
                         )
                     raise
-                if (downloader.properties.metadata or {}).get("hdi_isfolder") == "true":
+                if _is_folder_blob(downloader.properties.metadata):
                     raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
                 return await downloader.readall()
 
@@ -1186,7 +1220,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 class AbfsReadableFile(AdaptiveReadableFile):
     """A blob read by ranges, all of one version: its ETag, by If-Match.
 
-    Its block and split sizes are the library's defaults, which were measured on Azure.
+    Its block and split sizes are the library's defaults, which suit Azure.
     """
 
     def __init__(

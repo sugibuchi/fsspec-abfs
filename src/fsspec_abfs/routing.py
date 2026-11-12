@@ -3,8 +3,8 @@
 It routes each URL to the `AbfsFileSystem` of its account, made when first
 needed, with the library's `AsyncRoutingFileSystem`. A copy or move within an
 account is that account's own. Between two accounts, each file is streamed
-through this process, or copied on the server from the source's URL with a
-user delegation SAS: see ``cross_account_copy``.
+through this process, or copied on the server from the source's signed URL:
+see ``cross_account_copy``.
 """
 
 from __future__ import annotations
@@ -35,17 +35,18 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
     """An async fsspec filesystem of any Azure storage account, by Hadoop's ABFS URLs.
 
     It takes only Hadoop's URLs, which name their account:
-    ``abfss://<container>@<account>.dfs.<domain>/<path>``, or ``abfs://``. Its
-    paths are those URLs, with their protocol: ``_strip_protocol`` keeps it,
-    and the names that ``ls``, ``info`` and ``find`` answer are full URLs too,
-    always ``abfss://``.
+    ``abfss://<container>@<account>.dfs.<domain>/<path>``, ``abfs://``, or
+    adlfs' ``az://``. Its paths are those URLs, with their protocol:
+    ``_strip_protocol`` keeps it. The names that ``ls``, ``info`` and ``find``
+    answer are full URLs too, always ``abfss://``.
 
-    Each account is an `AbfsFileSystem` of its own, made when first needed. An
-    account in ``accounts`` is made with the arguments given there. Any
-    other is made with the default ``credential`` and the concurrency given
-    here. A copy or move within an account is that account's own, e.g. a
-    rename. Between two accounts, it is the library's copy across storages,
-    each file as ``cross_account_copy`` says.
+    Each account is an `AbfsFileSystem` of its own, made when first needed, in
+    the router's mode and on its loop. An account in ``accounts`` is made with
+    the arguments given there. Any other is made with the default
+    ``credential`` and the concurrency given here. A copy or move within an
+    account is that account's own, e.g. a rename. Between two accounts, it is
+    the library's copy across storages, each file as ``cross_account_copy``
+    says.
 
     Parameters
     ----------
@@ -56,9 +57,9 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
         an account needing one is given its own in ``accounts``. One
         credential object serves every account without one of its own, so
         that its tokens are asked for once. A credential named by a string is
-        made here, with the options its constructor names, e.g.
-        ``tenant_id``, taken from ``storage_options``, and closed by `close`.
-        A credential object given is the caller's to close.
+        made here, with the options of ``storage_options`` its constructor
+        names, e.g. ``tenant_id``. It is closed by `close`. A credential
+        object given is the caller's to close.
     accounts : list of dict, optional
         The arguments of `AbfsFileSystem` for some accounts, one dict per
         account, each naming it by ``account_name`` and ``account_domain``, or
@@ -68,9 +69,11 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
         without ``credential`` takes the default one, and one without
         ``operation_concurrency`` or ``io_concurrency`` those given here.
     operation_concurrency : int, optional
-        The strategies' requests at a time, of each account.
+        The strategies' requests at a time, of each account: by default,
+        `AbfsFileSystem`'s, 100.
     io_concurrency : int, optional
-        The range reads and block uploads at a time, of each account's files.
+        The range reads and block uploads at a time, of each account's files:
+        by default, `AbfsFileSystem`'s, 16.
     transfer_concurrency : int, default 8
         The files copied between two accounts at a time.
     cross_account_copy : {"streaming", "server-side"}, default "streaming"
@@ -80,10 +83,11 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
           a time. It needs only reading the source and writing the
           destination, with any credentials.
         - "server-side" has the destination's account copy it from the
-          source's URL, with no data through this process. The URL carries a
-          user delegation SAS when the source's credential is a token one,
-          see `AbfsFileSystem._get_user_delegation_key`, the source's own SAS when it is one,
-          or nothing when anonymous.
+          source's URL, with no data through this process. The URL is the
+          source's `AbfsFileSystem.sign`, and a SAS signed for it is valid for
+          12 hours. No copy falls
+          back on streaming: one whose source the destination cannot read
+          fails.
     **storage_options
         The default credential's options, and those of
         `fsspec.asyn.AsyncFileSystem`, e.g. ``asynchronous=True``.
@@ -276,8 +280,8 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
         if self.cross_account_copy == "streaming":
             await super()._cross_fs_cp_entry(src_fs, src_entry, dest_fs, dest_path)
         else:
-            # The SAS outlives the copy: a user delegation key kept has 12
-            # hours left at least, and the copy runs no longer, it is assumed.
+            # The SAS must outlive the copy, assumed to take less than 12 hours.
+            # A user delegation key kept has at least that long left.
             expiration = src_fs._user_delegation_key_margin.total_seconds()
             url = await src_fs._sign(src_entry["name"], expiration=int(expiration))
             await dest_fs._copy_from_url(url, src_entry["name"], dest_path)

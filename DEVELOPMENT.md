@@ -37,7 +37,7 @@ option overrides its variable. A test id names its API and its kind of account, 
 | `test_errors.py`      | `_errors.py`, with no server                                     |
 | `test_paths.py`       | `_paths.py`, the account's arguments and the cache, no server    |
 | `test_package.py`     | The package itself                                               |
-| `test_routing.py`     | `AbfsFileSystems` over two dummy accounts, the delegation key    |
+| `test_routing.py`     | `AbfsFileSystems`, `sign`, `use()` and the delegation key        |
 
 The fixtures of `tests/conftest.py`:
 
@@ -131,7 +131,8 @@ an error, not a skip that would pass unseen. They need an account of each kind c
 An endpoint is e.g. `https://<account>.dfs.core.windows.net/`. Each test works in a folder of its own,
 `fsspec-abfs-test-<run>/<test>` in the container, deleted afterwards. The credential is
 `azure.identity.aio.DefaultAzureCredential`, e.g. from `az login`. The tests load a `.env` file in the repository
-folder, which can hold these variables.
+folder, which can hold these variables. The live copy between two accounts needs both endpoints, and is skipped
+without them.
 
 Only live tests check what the dummy assumes, and what it does not model:
 
@@ -167,8 +168,8 @@ The live job holds a credential of the accounts, so what it runs is fixed:
 - `uv.lock` is committed, with every package's hash. CI installs with `uv sync --locked`, which fails on a stale lock.
 - Actions are pinned to commit SHAs, and setup-uv to a uv version.
 - Dependabot updates `uv.lock` and the Actions' SHAs weekly.
-- Each workflow's token can only read the repository. Only the jobs that need them add `id-token: write` or
-  `contents: write`.
+- Each workflow's token can only read the repository. Only the jobs that need them add `id-token: write`,
+  `contents: write` or `security-events: write`.
 - The live job and the release build use no cache.
 
 ruff, zizmor and actionlint, run with `uvx`, are the exception: CI runs their latest versions, in a job without secrets.
@@ -176,7 +177,7 @@ ruff, zizmor and actionlint, run with `uvx`, are the exception: CI runs their la
 ### The `azure` environment
 
 The live tests authenticate as a user-assigned managed identity, by workload identity federation: no secret is
-stored. An Entra ID app works the same. The identity needs two roles on each account:
+stored. An Entra ID app works the same. The identity needs two roles in each account:
 
 - Storage Blob Data Contributor on the test container, for the data;
 - Storage Blob Delegator on the account, for the user delegation keys of `AbfsFileSystems`' server-side copies.
@@ -256,17 +257,20 @@ the file system takes the way right on both kinds: the blob API, and moves by co
 ### Many accounts by their URLs
 
 `AbfsFileSystems` takes only Hadoop's URLs, which name their account. Its paths are those URLs, protocol included, so
-that a name it answers is usable anywhere, e.g. by Spark. Each account is an `AbfsFileSystem` of its own.
+that a name it answers is usable anywhere, e.g. by Spark. Each account is an `AbfsFileSystem` of its own, made in the
+router's mode, on its loop, and uncached: the router keeps and closes it.
 
 Its default credential is a Microsoft Entra ID token credential only. A SAS, a shared key or anonymous access each
-fit one account, so an account needing one is given it in `accounts`.
+fit one account, so an account needing one is given it in `accounts`. A credential the router made from a string is
+closed on `backends_loop`, where the accounts' clients ran.
 
 A copy between two accounts goes one of two ways, chosen by `cross_account_copy`:
 
 - `"streaming"`, the default, reads each file and writes it through this process. It works with any credentials.
 - `"server-side"` has the destination copy each file from the source's URL, with no data through this process. A
   token credential reads the source by a user delegation SAS. That needs the action `generateUserDelegationKey` at
-  the source account's level.
+  the source account's level. Each SAS is signed for `_user_delegation_key_margin`, 12 hours, which a kept key always
+  covers.
 
 ### Fewer requests
 
@@ -304,12 +308,12 @@ arguments, and unpickling calls the constructor again:
 
 | Module               | Holds                                                                             |
 |----------------------|-----------------------------------------------------------------------------------|
-| `abfs.py`            | `AbfsFileSystem`, its profiles, file objects, and user delegation keys            |
+| `abfs.py`            | `AbfsFileSystem`, its profiles, file objects, and signed URLs                     |
 | `_paths.py`          | The accounts, URLs and paths, as regular expressions                              |
 | `credentials.py`     | `StorageCredential`: what each value passed as a credential gives                 |
 | `routing.py`         | `AbfsFileSystems`                                                                 |
 | `_errors.py`         | Azure's errors as `OSError`s                                                      |
-| `_listing.py`        | The blob API's recursive listing, a page asked for while the last one is parsed   |
+| `_listing.py`        | The blob API's recursive listing, a page ahead, and `bare_etag` for every entry   |
 | `_contrib/strategy/` | The copy of fsspec-alt-strategies                                                 |
 
 `__init__.py` imports `AbfsFileSystem` and `AbfsFileSystems` on first use, as the Azure SDK is slow to import. The
