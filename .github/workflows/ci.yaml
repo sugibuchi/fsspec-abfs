@@ -5,10 +5,6 @@
 #
 # The live tests then run on Azure, in the GitHub environment `azure`, which
 # DEVELOPMENT.md describes. An environment without AZURE_CLIENT_ID is skipped.
-#
-# Until fsspec-alt-strategies' next release, pyproject.toml takes its interface
-# from a checkout of the library's wip branch beside this repository. Each job
-# installing the project checks both out side by side, as uv.lock expects.
 name: CI
 
 on:
@@ -54,29 +50,16 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-    defaults:
-      run:
-        working-directory: fsspec-abfs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          path: fsspec-abfs
           persist-credentials: false  # no job pushes: the token is not left in .git/config
           fetch-depth: 0  # the version comes from the git tags (hatch-vcs)
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          repository: sugibuchi/fsspec-alt-strategies
-          ref: wip
-          path: fsspec-alt-strategies
-          persist-credentials: false
-          fetch-depth: 0  # its version comes from its git tags too
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.22"  # not the latest uv: the same in every run
           python-version: ${{ matrix.python-version }}
-          cache-dependency-glob: fsspec-abfs/uv.lock
 
       - name: Install the project
         run: uv sync --locked  # fails if uv.lock is out of date
@@ -90,7 +73,6 @@ jobs:
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          working-directory: fsspec-abfs  # the repository's checkout, beside the library's
           files: coverage.xml
 
   live:
@@ -111,9 +93,6 @@ jobs:
       # accounts' throughput is shared.
       group: live-${{ github.ref }}
       cancel-in-progress: false
-    defaults:
-      run:
-        working-directory: fsspec-abfs
     env:
       # DefaultAzureCredential takes these for its WorkloadIdentityCredential.
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -126,7 +105,6 @@ jobs:
       # account tested are those whose endpoint is set.
       - name: Check the environment
         id: configured
-        working-directory: .
         run: |
           if [[ -z "$AZURE_CLIENT_ID" ]]; then
             echo "::notice::The environment azure has no AZURE_CLIENT_ID: skipped."
@@ -153,18 +131,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: ${{ steps.configured.outputs.ok == 'true' }}
         with:
-          path: fsspec-abfs
           persist-credentials: false  # no job pushes: the token is not left in .git/config
           fetch-depth: 0  # the version comes from the git tags (hatch-vcs)
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        if: ${{ steps.configured.outputs.ok == 'true' }}
-        with:
-          repository: sugibuchi/fsspec-alt-strategies
-          ref: wip
-          path: fsspec-alt-strategies
-          persist-credentials: false
-          fetch-depth: 0  # its version comes from its git tags too
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         if: ${{ steps.configured.outputs.ok == 'true' }}

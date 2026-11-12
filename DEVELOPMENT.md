@@ -158,9 +158,6 @@ Only live tests check what the dummy assumes, and what it does not model:
 Dependabot get no environment, so they run `test` only. An environment without `AZURE_CLIENT_ID` is skipped with a
 notice.
 
-Until the library's next release, `test` and `live` also check out fsspec-alt-strategies' `wip` branch beside this
-repository, where `[tool.uv.sources]` and `uv.lock` expect it.
-
 ### Supply chain
 
 The live job holds a credential of the accounts, so what it runs is fixed:
@@ -204,9 +201,6 @@ The version comes from the git tag, through hatch-vcs.
 
 PyPI's trusted publisher for `fsspec-abfs` names the workflow `release.yaml` and the environment `pypi`. It
 authenticates with the workflow's OIDC token, with no stored token.
-
-Release only once fsspec-alt-strategies has released the interface this package needs. The published package depends
-on `fsspec-alt-strategies` from PyPI: `[tool.uv.sources]` is for development only.
 
 ## Design
 
@@ -409,8 +403,7 @@ Put Blob or Put Block List until commit.
 
 ## The copy of fsspec-alt-strategies
 
-`src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, from the library's `wip`
-branch after 0.3.0: its `_version.py` names the commit. It keeps only what the package uses: `tree/`, `common/`,
+`src/fsspec_abfs/_contrib/strategy/` is a copy of the package `fsspec-alt-strategies-impl`, version 0.4.0. It keeps only what the package uses: `tree/`, `common/`,
 `files/` and `router.py`. `AbfsFileSystem` lists a whole tree by Azure's own recursive listings, so the tree family's
 fallback, `tree/listing.py`, is left out too. Two files stay:
 
@@ -419,9 +412,8 @@ fallback, `tree/listing.py`, is left out too. Two files stay:
 
 Ruff skips the copy.
 
-Its interface is not copied: it is the dependency `fsspec-alt-strategies>=0.3,<0.4`, bounded at the copy's minor
-version, as a minor release may break the copy before 1.0. Until the library's next release, `[tool.uv.sources]` takes
-it from a checkout of the library's `wip` branch beside this repository, at `../fsspec-alt-strategies`.
+Its interface is not copied: it is the dependency `fsspec-alt-strategies>=0.4,<0.5`, from PyPI, bounded at the copy's
+minor version, as a minor release may break the copy before 1.0.
 
 To refresh it:
 

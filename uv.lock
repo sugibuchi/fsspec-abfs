@@ -937,13 +937,13 @@ requires-dist = [
     { name = "azure-identity" },
     { name = "azure-storage-file-datalake" },
     { name = "fsspec", specifier = ">=2024.6.0" },
-    { name = "fsspec-alt-strategies", editable = "../fsspec-alt-strategies/packages/common" },
+    { name = "fsspec-alt-strategies", specifier = ">=0.4,<0.5" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "fastapi", specifier = ">=0.162.2" },
-    { name = "fsspec-alt-strategies-impl", extras = ["cli"], specifier = ">=0.3,<0.4" },
+    { name = "fsspec-alt-strategies-impl", extras = ["cli"], specifier = ">=0.4,<0.5" },
     { name = "hypercorn", specifier = ">=0.18.0" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=9.1.1" },
@@ -954,25 +954,27 @@ dev = [
 
 [[package]]
 name = "fsspec-alt-strategies"
-source = { editable = "../fsspec-alt-strategies/packages/common" }
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "fsspec", specifier = ">=2024.2.0" }]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/8f/5d147ff36ab6649ac109d05012dbc765f4507818bc4b798535fc83d5372b/fsspec_alt_strategies-0.4.0.tar.gz", hash = "sha256:b3538e79e3cd93823d50f04c62cbbad10606e8e24ffbc59accda8d29c1eae7dc", size = 17147, upload-time = "2026-11-12T00:14:54.754Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/ea/55893b1b280516b5804b0b6cd8c625304a9cdd72ef8e7e0ce8802bbd4c5f/fsspec_alt_strategies-0.4.0-py3-none-any.whl", hash = "sha256:9aa45fc750840160a0e361ef9b6014652c900c9563929d26438c5917618615bd", size = 18637, upload-time = "2026-11-12T00:14:53.35Z" },
+]
 
 [[package]]
 name = "fsspec-alt-strategies-impl"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec" },
     { name = "fsspec-alt-strategies" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/0d/6c91eb7edbe0bc6dfc4b46e60275a823e36fbc3aa2aabaabc2097fc2d074/fsspec_alt_strategies_impl-0.3.0.tar.gz", hash = "sha256:5129aed8598c9c77b0823d2d5c1bf01155e66442b2cbf45b8d13f11635668a7b", size = 207400, upload-time = "2026-11-11T16:10:59.734Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/34/c4b46b90dc66e834cb2afb35cb2d4781fa6eb80af2bf5bc154490c642c14/fsspec_alt_strategies_impl-0.4.0.tar.gz", hash = "sha256:272024b660e44ea6eed324b2bcc542bc9f078b4be0dd5939d8a36ed3e9c49366", size = 210209, upload-time = "2026-11-12T00:15:35.817Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/0f/2fc621e1f2ebe88ac9135f9a7d9342dd2824b093c9f77d0952fa4f3689e4/fsspec_alt_strategies_impl-0.3.0-py3-none-any.whl", hash = "sha256:aa0990c3353c70832fc7502bd18621746ece6746e7cad3ada1860e4f898e769b", size = 166386, upload-time = "2026-11-11T16:10:58.246Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/35/8b770895e03ed8cc0b66b0766b687dd37269056342a331a200b8ba12372f/fsspec_alt_strategies_impl-0.4.0-py3-none-any.whl", hash = "sha256:efd9740dc1a6137257a10a9df74826406b2b9fbd876091787c343d4790065858", size = 167606, upload-time = "2026-11-12T00:15:34.296Z" },
 ]
 
 [package.optional-dependencies]
