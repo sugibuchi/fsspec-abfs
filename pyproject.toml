@@ -1,0 +1,136 @@
+[project]
+name = "fsspec-abfs"
+dynamic = ["version"]
+description = "An fsspec file system for Azure Data Lake Storage Gen2"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Tsuyoshi SUGIBUCHI" }]
+keywords = ["fsspec", "filesystem", "azure", "adls", "data lake", "async"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Filesystems",
+    "Typing :: Typed",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fsspec>=2024.6.0",
+    # The interface of the strategies, which are copied into the package.
+    "fsspec-alt-strategies>=0.4,<0.5",
+    "azure-identity",
+    "azure-storage-file-datalake",
+    "aiohttp",
+]
+
+
+# fsspec loads the class only when a URL of the protocol is opened: importing
+# fsspec stays cheap. These replace adlfs' registration of the same protocols.
+[project.entry-points."fsspec.specs"]
+abfs = "fsspec_abfs.abfs:AbfsFileSystem"
+abfss = "fsspec_abfs.abfs:AbfsFileSystem"
+
+[project.urls]
+Homepage = "https://github.com/sugibuchi/fsspec-abfs"
+Source = "https://github.com/sugibuchi/fsspec-abfs"
+Issues = "https://github.com/sugibuchi/fsspec-abfs/issues"
+Changelog = "https://github.com/sugibuchi/fsspec-abfs/releases"
+
+[dependency-groups]
+dev = [
+    # The dummy API server of the tests, tests/dummy_api.py.
+    "fastapi>=0.162.2",
+    # The command copying the strategies, and their simulated file system.
+    "fsspec-alt-strategies-impl[cli]>=0.4,<0.5",
+    "hypercorn>=0.18.0",
+    "pre-commit>=4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=7.1.0",
+    "python-dotenv>=1.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { version_scheme = "post-release" }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/fsspec_abfs/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fsspec_abfs"]
+
+[tool.uv]
+# Rebuild the package when its git commit or tags change, as its version comes
+# from git (hatch-vcs), not only when pyproject.toml changes.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { git = { commit = true, tags = true } },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The tests import the dummy server, tests/dummy_api.py, by its module name.
+pythonpath = ["tests"]
+addopts = ["--import-mode=importlib"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["src/fsspec_abfs"]
+# The copy of fsspec-alt-strategies is tested there.
+omit = ["src/fsspec_abfs/_contrib/*"]
+
+[tool.ruff]
+exclude = [".tox", "build", "src/fsspec_abfs/_contrib"]
+line-length = 88
+
+[tool.ruff.format]
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "ASYNC",
+    "B",
+    "C",
+    "G",
+    "E",
+    "F",
+    "FURB",
+    "I",
+    "LOG",
+    "PERF",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PIE",
+    "PYI",
+    "RUF",
+    "SIM",
+    "SLOT",
+    "TC",
+    "UP",
+]
+ignore = [
+    "E501",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    "PLR2004",
+    "SIM117",
+]
