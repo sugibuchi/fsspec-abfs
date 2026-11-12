@@ -22,6 +22,8 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     permissions:
+      contents: read  # the checkout: a job's permissions replace the workflow's
+      actions: read  # the workflow runs, which CodeQL reads in a private repository
       security-events: write  # the results, to code scanning
     strategy:
       fail-fast: false
