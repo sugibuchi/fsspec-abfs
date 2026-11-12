@@ -457,9 +457,29 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     def split_path(self, path: str) -> tuple[str, str]:
         """A path's container and its path within the container, each "" if none.
 
-        ``path`` is a path or a URL, stripped here. A Hadoop-style URL must name
-        the filesystem's own account: one of another account raises ValueError,
-        as the filesystem would otherwise act on a path of its own by that name.
+        A Hadoop-style URL must name the filesystem's own account, as the
+        filesystem would otherwise act on a path of its own by that name.
+
+        Parameters
+        ----------
+        path : str
+            A path, ``/<container>/<path>``, or a URL of any form the
+            filesystem takes, stripped here.
+
+        Returns
+        -------
+        tuple of str
+            The container, and the path within it, without a leading "/".
+
+        Raises
+        ------
+        ValueError
+            If ``path`` is a URL of another account.
+
+        Examples
+        --------
+        >>> fs.split_path("abfss://data@myaccount.dfs.core.windows.net/raw/x.csv")
+        ('data', 'raw/x.csv')
         """
         account = account_of(path)
         own = (self.account_name, self.account_domain)
@@ -475,9 +495,28 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         """A path's URL in Hadoop's form, ``abfss://<container>@<account>.dfs.<domain>/<path>``.
 
         It is the form Spark and Hadoop's ABFS driver take, and names the
-        account, so it is a path's full name outside the filesystem. ``name`` is
-        a path or a URL of the filesystem's account. A path with no container,
-        e.g. the root, raises ValueError: Hadoop's form has none for it.
+        account, so it is a path's full name outside the filesystem.
+
+        Parameters
+        ----------
+        name : str
+            A path, or a URL of the filesystem's account.
+
+        Returns
+        -------
+        str
+            The URL. A container's root has no trailing "/".
+
+        Raises
+        ------
+        ValueError
+            If ``name`` has no container, e.g. the root, as Hadoop's form has
+            none for it, or is a URL of another account.
+
+        Examples
+        --------
+        >>> fs.unstrip_protocol("/data/raw/x.csv")
+        'abfss://data@myaccount.dfs.core.windows.net/raw/x.csv'
         """
         container, key = self.split_path(name)
         return hadoop_url(container, key, self.account_name, self.account_domain)

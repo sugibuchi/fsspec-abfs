@@ -190,7 +190,24 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
             return hadoop_url(container, key, account, domain)
 
     def unstrip_protocol(self, name: str) -> str:
-        """A path's URL: the path itself, a Hadoop URL."""
+        """A path's URL: the path itself, a Hadoop URL, in the form the router names it.
+
+        Parameters
+        ----------
+        name : str
+            A Hadoop URL, ``abfss://``, ``abfs://`` or ``az://``.
+
+        Returns
+        -------
+        str
+            The URL as ``abfss://``, its account and container in lower case,
+            without a trailing "/".
+
+        Raises
+        ------
+        ValueError
+            If ``name`` is no Hadoop URL.
+        """
         return self._strip_protocol(name)
 
     @classmethod
@@ -220,9 +237,33 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
     ) -> AbfsFileSystem:
         """The `AbfsFileSystem` of an account, made the first time, with its arguments.
 
-        Its arguments are those of ``accounts`` for the account. The
-        default credential and concurrency fill in those it lacks.
-        A closed router makes none: it raises RuntimeError.
+        Its arguments are those of ``accounts`` for the account. The default
+        credential and concurrency fill in those it lacks. It is made in the
+        router's mode, on its loop, and the router closes it.
+
+        Parameters
+        ----------
+        account_name : str
+            The account's name.
+        account_domain : {"core.windows.net", "fabric.microsoft.com"}, default "core.windows.net"
+            The account's domain.
+
+        Returns
+        -------
+        AbfsFileSystem
+            The same one for each call of one account.
+
+        Raises
+        ------
+        ValueError
+            If the name or the domain is none Azure takes.
+        RuntimeError
+            If the router is closed.
+
+        Examples
+        --------
+        >>> fs.filesystem("myaccount").is_hns_enabled
+        True
         """
         if self._closed:
             raise RuntimeError("The file system is already closed")
