@@ -39,11 +39,18 @@ async def test_ls(fs, tree) -> None:
     assert (x["type"], x["size"]) == ("file", 5)
 
 
-async def test_ls_file_and_missing(fs, tree) -> None:
+def _missing_container(api: str) -> tuple[type[OSError], ...]:
+    """What a missing container raises: on Azure, a role on one container only cannot tell, and is refused."""
+    return (
+        (FileNotFoundError,) if api == "dummy" else (FileNotFoundError, PermissionError)
+    )
+
+
+async def test_ls_file_and_missing(api, fs, tree) -> None:
     assert await fs._ls(f"{tree}/z.txt", detail=False) == [f"{tree}/z.txt"]
     with pytest.raises(FileNotFoundError):
         await fs._ls(f"{tree}/nothing")
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(_missing_container(api)):
         await fs._ls("nocontainer0fsspecabfs/a")
 
 
@@ -76,16 +83,17 @@ async def test_empty_folder(fs, root, hns) -> None:
     assert not await fs._exists(f"{root}/empty")
 
 
-async def test_info(fs, tree) -> None:
+async def test_info(api, fs, tree) -> None:
     assert (await fs._info(""))["type"] == "directory"
     assert (await fs._info(tree.partition("/")[0]))["type"] == "directory"
     assert (await fs._info(f"{tree}/a"))["type"] == "directory"
     info = await fs._info(f"{tree}/a/x.txt")
     assert (info["type"], info["size"]) == ("file", 5)
     assert info["etag"]
-    for missing in (f"{tree}/nothing", "nocontainer0fsspecabfs"):
-        with pytest.raises(FileNotFoundError):
-            await fs._info(missing)
+    with pytest.raises(FileNotFoundError):
+        await fs._info(f"{tree}/nothing")
+    with pytest.raises(_missing_container(api)):
+        await fs._info("nocontainer0fsspecabfs")
 
 
 async def test_find(fs, tree) -> None:
@@ -255,8 +263,11 @@ async def test_makedirs_and_rmdir(fs, tree, hns) -> None:
     assert await fs._exists(f"{tree}/a/x.txt")
 
 
-def test_sync_api_and_transaction(make_fs, root) -> None:
-    fs = make_fs(asynchronous=False)
+def test_sync_api_and_transaction(api, make_fs, root) -> None:
+    # Live, a credential of its own: the sync API binds its session to fsspec's
+    # loop, where close() closes it, not the test's loop the fixture's is closed on.
+    own = {"credential": "default"} if api == "live" else {}
+    fs = make_fs(asynchronous=False, **own)
     fs.pipe(f"{root}/other.txt", b"x")
     with fs.transaction:
         with fs.open(f"{root}/t.txt", "wb") as f:
