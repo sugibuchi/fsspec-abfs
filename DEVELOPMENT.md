@@ -151,7 +151,8 @@ Only live tests check what the dummy assumes, and what it does not model:
 `ci.yaml` has three jobs:
 
 - `lint`: ruff check, ruff format check, zizmor and actionlint;
-- `test`: pytest `--api=dummy` on Python 3.11 to 3.14, with no credentials, and coverage to Codecov from 3.14;
+- `test`: pytest `--api=dummy` on Python 3.11 to 3.14, with no credentials. Each version's results go to Codecov's test
+  analytics, flagged by the version, and the coverage from 3.14;
 - `live`: after `test`, pytest `--api=live` on Python 3.14, in the GitHub environment `azure`.
 
 `live` runs on pushes, by hand, and on pull requests from branches of this repository. Pull requests from forks and
@@ -190,6 +191,8 @@ audience `api://AzureADTokenExchange`.
 At the repository level, the secret `CODECOV_TOKEN` is the repository's upload token for
 [Codecov](https://about.codecov.io/). `codecov.yml` makes coverage informational: it never fails a pull request, as
 code reached only by the live tests counts as uncovered.
+
+The `live` job uploads nothing to Codecov: it holds a credential of the accounts, and runs no action it does not need.
 
 ## Releasing
 
