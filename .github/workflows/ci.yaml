@@ -1,11 +1,12 @@
 # Lint the code and the workflows, and test, on every push to main and pull
 # request. The offline tests run on the dummy server, with no credentials, on
-# every supported Python version. Their results are uploaded to Codecov's test
-# analytics from each version, and the coverage from one: uploading needs the
-# repository secret CODECOV_TOKEN.
+# every supported Python version. The coverage is uploaded to Codecov from one
+# Python version: uploading needs the repository secret CODECOV_TOKEN.
 #
 # The live tests then run on Azure, in the GitHub environment `azure`, which
 # DEVELOPMENT.md describes. An environment without AZURE_CLIENT_ID is skipped.
+# Their results, with each test's runtime, go to Codecov's test analytics, from
+# a job of their own, which holds no credential of the accounts.
 name: CI
 
 on:
@@ -67,10 +68,7 @@ jobs:
 
       # The dummy server only, whatever a variable says: this job has no credentials.
       - name: Test with coverage
-        # junit.xml in the legacy JUnit form, which Codecov's test analytics reads.
-        run: >-
-          uv run --no-sync pytest --api=dummy --cov --cov-report=term --cov-report=xml:coverage.xml
-          --junitxml=junit.xml -o junit_family=legacy
+        run: uv run --no-sync pytest --api=dummy --cov --cov-report=term --cov-report=xml:coverage.xml
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() && matrix.python-version == '3.14' }}
@@ -78,16 +76,6 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
-
-      # From every version, flagged by it: a test failing on one only shows.
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          report_type: test_results
-          files: junit.xml
-          flags: python${{ matrix.python-version }}
 
   live:
     needs: test
@@ -99,6 +87,8 @@ jobs:
           && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     environment: azure
+    outputs:
+      tested: ${{ steps.configured.outputs.ok }}
     permissions:
       contents: read
       id-token: write  # GitHub's OIDC token, for workload identity federation with Microsoft Entra ID
@@ -163,4 +153,38 @@ jobs:
         if: ${{ steps.configured.outputs.ok == 'true' }}
         env:
           HNS: ${{ steps.configured.outputs.hns }}
-        run: bash .github/scripts/with-id-token-file.sh uv run --no-sync pytest --api=live --hns="$HNS"
+        # junit.xml in the legacy JUnit form, which Codecov's test analytics reads, with each test's runtime.
+        run: >-
+          bash .github/scripts/with-id-token-file.sh uv run --no-sync pytest --api=live --hns="$HNS"
+          --junitxml=junit.xml -o junit_family=legacy
+
+      # Handed to live-results by GitHub's own action: Codecov's runs in a job
+      # without the accounts' credential.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: ${{ !cancelled() && steps.configured.outputs.ok == 'true' }}
+        with:
+          name: live-results
+          path: junit.xml
+          if-no-files-found: error
+
+  live-results:
+    needs: live
+    # Also after failed tests, whose runtimes count too: not when none ran.
+    if: ${{ !cancelled() && needs.live.outputs.tested == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false  # no job pushes: the token is not left in .git/config
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: live-results
+
+      - name: Upload the live test results to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          files: junit.xml
+          flags: live
