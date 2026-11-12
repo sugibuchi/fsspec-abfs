@@ -5,6 +5,7 @@
 [![License](https://img.shields.io/github/license/sugibuchi/fsspec-abfs)](https://github.com/sugibuchi/fsspec-abfs/blob/main/LICENSE)
 [![CI](https://github.com/sugibuchi/fsspec-abfs/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/sugibuchi/fsspec-abfs/actions/workflows/ci.yaml)
 [![CodeQL](https://github.com/sugibuchi/fsspec-abfs/actions/workflows/codeql.yaml/badge.svg?branch=main)](https://github.com/sugibuchi/fsspec-abfs/actions/workflows/codeql.yaml)
+[![codecov](https://codecov.io/github/sugibuchi/fsspec-abfs/graph/badge.svg?token=WN1KKPOP7Y)](https://codecov.io/github/sugibuchi/fsspec-abfs)
 
 An [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) file system for
 [Azure Data Lake Storage Gen2](https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-introduction).
