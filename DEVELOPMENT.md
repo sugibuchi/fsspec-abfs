@@ -346,10 +346,10 @@ credential object given is the caller's to close.
 `storage_profile` is `HNS_PROFILE`, `NO_HNS_PROFILE` or `UNKNOWN_HNS_PROFILE`:
 
 - `is_hns_enabled` given to the constructor sets it, and nothing is asked.
-- Otherwise the first operation needing it calls `_load_storage_profile` with its paths.
-- `_check_hns_enabled` asks the account information, then the root ACL of the operation's container, as a SAS or a
-  role of one container is refused the account information.
-- If neither tells, a warning is logged, and the profile stays unknown for the file system's life.
+- Otherwise the first operation needing it calls `_load_storage_profile`, whose path, passed by the copy of the
+  strategies, is unused: the profile is the account's.
+- `_check_hns_enabled` asks the account information. A SAS or a role of one container is refused it.
+- If it does not tell, a warning is logged, and the profile stays unknown for the file system's life.
 
 ### Primitives
 

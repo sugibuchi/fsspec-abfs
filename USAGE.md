@@ -65,13 +65,11 @@ The other keyword arguments go to fsspec's `AsyncFileSystem`, e.g. `asynchronous
 ### The hierarchical namespace
 
 The file system works the same on accounts with or without a hierarchical namespace, but some operations take fewer
-requests with one. Unless `is_hns_enabled` says, the first operation needing to know asks the account:
+requests with one. Unless `is_hns_enabled` says, the first operation needing to know asks the account information.
+That needs a role on the account: a SAS token or a role of one container is refused it.
 
-1. The account information tells it, but needs a role on the account.
-2. Else the root of the container the operation works in tells it, e.g. for a SAS token of one container.
-
-If neither answers, a warning is logged, and the file system takes the way right on both kinds of account. Pass
-`is_hns_enabled` to save the request, or where the credential cannot ask.
+If the account does not answer, a warning is logged, and the file system takes the way right on both kinds of account.
+Pass `is_hns_enabled` to save the request, or where the credential cannot ask.
 
 ---
 

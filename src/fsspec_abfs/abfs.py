@@ -133,13 +133,6 @@ path of its own, and a move copies and deletes.
 
 _PROFILES = {True: HNS_PROFILE, False: NO_HNS_PROFILE, None: UNKNOWN_HNS_PROFILE}
 
-# The error codes of a Data Lake request on an account without a hierarchical
-# namespace: 400, or 409 where the account has features the dfs endpoint
-# refuses, e.g. soft delete.
-_NO_HNS_CODES = frozenset(
-    {"HierarchicalNamespaceNotEnabled", "EndpointUnsupportedAccountFeatures"}
-)
-
 _root_info = {"name": "/", "size": 0, "type": "directory"}
 
 _CLOCK_SKEW = timedelta(minutes=5)
@@ -652,70 +645,43 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         """
         return self._is_hns_enabled
 
-    async def _load_storage_profile(self, path: str) -> StorageProfile:
-        """The profile of the account, asked at the container of ``path``: see `_check_hns_enabled`.
+    async def _load_storage_profile(self, path: str = "") -> StorageProfile:
+        """The profile of the account: see `_check_hns_enabled`.
 
         The account is one namespace, so one profile fits the filesystem. The
-        base class loads it once, with the paths of the first operation needing
-        it, and keeps it as ``storage_profile``. A namespace declared to the
-        constructor is never asked. Else the account is asked, by
-        `_check_hns_enabled`, at the container of ``path``: a container's SAS or
-        role is allowed its root ACL. What it tells, or None, is kept as
-        `is_hns_enabled`.
+        base class loads it once, by the first operation needing it, and keeps
+        it as ``storage_profile``. A namespace declared to the constructor is
+        never asked. Else the account is asked, by `_check_hns_enabled`. What it
+        tells, or None, is kept as `is_hns_enabled`. ``path``, which the copy
+        of the strategies passes, is unused: the profile never depends on it.
         """
         if self._is_hns_enabled is None:
-            self._is_hns_enabled = await self._check_hns_enabled(
-                self.split_path(path)[0]
-            )
+            self._is_hns_enabled = await self._check_hns_enabled()
         return _PROFILES[self._is_hns_enabled]
 
-    async def _check_hns_enabled(self, container: str) -> bool | None:
+    async def _check_hns_enabled(self) -> bool | None:
         """Ask the account whether it has a hierarchical namespace: True, False, or None if unsure.
 
-        It asks every time: `_load_storage_profile` keeps what it tells.
-
-        1. The blob service's account information says so, but needs a role
-           on the account: a container's SAS or role is refused it.
-        2. Else the root ACL of ``container``, the container the first
-           operation acted in, from the Data Lake API: an account without a
-           hierarchical namespace refuses it by an error code of its own. An
-           operation at the root has no container to ask. Any other failure
-           tells nothing.
+        It asks every time: `_load_storage_profile` keeps what it tells. The
+        blob service's account information says so, but needs a role on the
+        account: a SAS or a role of one container is refused it. Then a warning
+        is logged, and ``is_hns_enabled`` given to the constructor says it.
 
         Only an error's type, status and code are logged: Azure's messages may
         quote request URLs, with a SAS token in them.
         """
-        blob_service, dfs_service = self._blob_service(), self._dfs_service()
-        last: BaseException | None = None
         try:
-            info = await blob_service.get_account_information()
+            info = await self._blob_service().get_account_information()
             return bool(info.get("is_hns_enabled"))
         except AzureError as e:
-            logger.debug("Account information refused: %s", describe(e))
-            last = e
-
-        if container:
-            directory = dfs_service.get_file_system_client(
-                container
-            ).get_directory_client("/")
-            try:
-                await directory.get_access_control()
-                return True
-            except HttpResponseError as e:
-                if getattr(e, "error_code", None) in _NO_HNS_CODES:
-                    return False
-                last = e
-            except AzureError as e:
-                last = e
-
-        logger.warning(
-            "Cannot tell whether the account %s has a hierarchical namespace"
-            " (%s): using the blob API, and moves by copy and delete. Pass"
-            " is_hns_enabled to say.",
-            self.account_name,
-            describe(last) if last else "no container to ask",
-        )
-        return None
+            logger.warning(
+                "Cannot tell whether the account %s has a hierarchical namespace"
+                " (%s): using the blob API, and moves by copy and delete. Pass"
+                " is_hns_enabled to say.",
+                self.account_name,
+                describe(e),
+            )
+            return None
 
     # Describing and listing.
 
