@@ -256,8 +256,7 @@ Delegator: a role on a container only is refused. See
 
 ### Containers
 
-The file system makes no container: create them with Azure's own tools, with their settings. `makedirs` of a missing
-container raises `PermissionError`, and of a folder in one `FileNotFoundError`. `rmdir` deletes an empty container.
+`rmdir` deletes an empty container. The file system makes none: see [Limitations](#containers-1).
 
 ### With or without a hierarchical namespace
 
@@ -269,8 +268,7 @@ container raises `PermissionError`, and of a folder in one `FileNotFoundError`. 
 | `rm` of a folder | One request for the folder with all in it         | One request per file                             |
 | `ls`, `find`     | The Data Lake API's listings                      | The blob API's listings                          |
 
-A rename is atomic, within a container or between two containers of the account. Between two, it needs a token
-credential or a SAS valid in both containers. Anonymous, it raises `PermissionError`.
+A rename is atomic, within a container or between two containers of the account.
 
 Copies run on the server, with no data through this process. A copy still pending is waited for.
 
@@ -297,8 +295,6 @@ df.to_parquet("/mycontainer/data/out.parquet", filesystem=fs)
 | `rb`  | Yes       |                                  |
 | `wb`  | Yes       |                                  |
 | `xb`  | Yes       | Fails if the file already exists |
-| `ab`  | No        |                                  |
-| `r+b` | No        |                                  |
 
 Reading:
 
@@ -328,14 +324,7 @@ with fs.transaction:
 ```
 
 A file's blocks are uploaded as it is written, and committed when the block ends. A file under 8 MiB is held in
-memory until then.
-
-Limits:
-
-- The files are committed one after another. A transaction is not atomic across files.
-- Only files written with `open` join the transaction, not those of `open_async`.
-- Copies, moves and deletes take effect at once.
-- If the process dies, uploaded blocks stay uncommitted until Azure drops them, after a week.
+memory until then. See [Limitations](#transactions-1) for what a transaction does not cover.
 
 ---
 
@@ -411,8 +400,7 @@ one, `transfer_concurrency` at a time, as `cross_account_copy` says:
 With `"server-side"`, the source's URL is its [signed URL](#signed-urls), as `sign` gives it. A SAS signed for the copy
 is valid for 12 hours, so that a long copy keeps reading its source.
 
-No copy falls back on streaming: a copy whose source the destination cannot read fails. With `"server-side"`, check two
-things before a copy:
+With `"server-side"`, check two things before a copy:
 
 1. With a Microsoft Entra ID token credential, the identity needs a role giving the action
    `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey` at the source account's level, as
@@ -430,3 +418,33 @@ A move between two accounts copies each file, then deletes it. A source whose co
 
 This file system caches no listing: every call reaches the storage, and `use_listings_cache` is always `False`. We have
 no plan to implement fsspec's `dircache` listing cache for now.
+
+### File modes
+
+- Files open in `rb`, `wb` and `xb` only. `ab` and `r+b` raise `io.UnsupportedOperation`.
+- `open_async` opens binary files only, without compression, as fsspec's does.
+
+### Containers
+
+- The file system makes no container: create them with Azure's own tools, with their settings.
+- `makedirs` of a missing container raises `PermissionError`, and of a folder in one `FileNotFoundError`.
+- Deleting the root, `/`, raises `PermissionError`.
+
+### Moves
+
+- Without a hierarchical namespace, a move is not atomic: each file is copied on the server, then deleted.
+- A rename between two containers needs a token credential or a SAS valid in both. Anonymous, it raises
+  `PermissionError`.
+- Between two accounts, a move is not atomic either: each file is copied, then deleted.
+
+### Copies between accounts
+
+With `cross_account_copy="server-side"`, no copy falls back on streaming: a copy whose source the destination cannot
+read fails.
+
+### Transactions
+
+- The files are committed one after another. A transaction is not atomic across files.
+- Only files written with `open` join the transaction, not those of `open_async`.
+- Copies, moves and deletes take effect at once.
+- If the process dies, uploaded blocks stay uncommitted until Azure drops them, after a week.
