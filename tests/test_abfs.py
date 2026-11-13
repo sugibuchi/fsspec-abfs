@@ -302,7 +302,6 @@ async def test_blob_listing_of_folders(dummy, make_fs, tree) -> None:
     # Unknown, so listed by the blob API. With HNS, it lists a folder twice:
     # as a blob, and as a prefix.
     dummy.failures["GetAccountInformation"] = (403, "AuthorizationPermissionMismatch")
-    dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure")
     fs = make_fs(is_hns_enabled=None)
     assert sorted(await fs._ls(tree, detail=False)) == [f"{tree}/a", f"{tree}/z.txt"]
     assert dummy.count("ListBlobs") == 1
@@ -449,7 +448,6 @@ async def test_cp_missing_container(dummy, fs, tree) -> None:
 
 async def test_unknown_hns_marks_folders(dummy, make_fs, root) -> None:
     dummy.failures["GetAccountInformation"] = (403, "AuthorizationPermissionMismatch")
-    dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure")
     fs = make_fs(is_hns_enabled=None)
     await fs._pipe_file(f"{root}/a/x.txt", b"1")
 

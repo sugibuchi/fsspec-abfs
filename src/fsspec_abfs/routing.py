@@ -19,7 +19,12 @@ from ._paths import (
     parse_hadoop_url,
     split_stripped,
 )
-from .abfs import AbfsFileSystem, close_on_loop, resolve_account
+from .abfs import (
+    AbfsFileSystem,
+    close_on_loop,
+    reduce_without_loop,
+    resolve_account,
+)
 from .credentials import StorageCredential
 
 __all__ = ["AbfsFileSystems", "CrossAccountCopy"]
@@ -58,8 +63,10 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
         credential object serves every account without one of its own, so
         that its tokens are asked for once. A credential named by a string is
         made here, with the options of ``storage_options`` its constructor
-        names, e.g. ``tenant_id``. It is closed by `close`. A credential
-        object given is the caller's to close.
+        names, e.g. ``tenant_id``, at the first account needing it. It is
+        closed by `close`. A credential object given is the caller's to close.
+        The router is pickled with its credential as given: a string, or an
+        object only if it pickles itself.
     accounts : list of dict, optional
         The arguments of `AbfsFileSystem` for some accounts, one dict per
         account, each naming it by ``account_name`` and ``account_domain``, or
@@ -139,17 +146,20 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
                 f" {cross_account_copy!r}"
             )
 
-        self.credential = StorageCredential.from_credential(
-            credential, **storage_options
-        )
-        if self.credential.kind != "TokenCredential":
+        kind = StorageCredential.kind_of(credential)
+        if kind != "TokenCredential":
             # A SAS, a key or anonymous access fits one account: none is the default.
             raise ValueError(
                 "The default credential must be a Microsoft Entra ID token credential,"
-                f" not {self.credential.kind}: give an account its own in accounts"
+                f" not {kind}: give an account its own in accounts"
             )
-        # One made from a string is the router's to close, with its accounts.
-        self._owns_credential = self.credential.value is not credential
+        # The credential as given, and the options a credential named takes
+        # its own from: both are the constructor's, as fsspec pickles them.
+        # The credential object is made at first need, by `_get_credential`,
+        # and never pickled.
+        self.credential: Any = credential
+        self.credential_options: dict[str, Any] = dict(storage_options)
+        self.__credential: StorageCredential | None = None
         self._closed = False
         self.operation_concurrency = operation_concurrency
         self.io_concurrency = io_concurrency
@@ -276,7 +286,7 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
             if "credential" not in options:
                 # The router's own object, shared: the account's file system
                 # does not close it.
-                options["credential"] = self.credential.value
+                options["credential"] = self._get_credential().value
             for name in ("operation_concurrency", "io_concurrency"):
                 if options.get(name) is None and getattr(self, name) is not None:
                     options[name] = getattr(self, name)
@@ -292,6 +302,18 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
 
         return self._backend(account, make)
 
+    def _get_credential(self) -> StorageCredential:
+        """The default credential object, shared by the accounts: made at first need, of `credential` and `credential_options`."""
+        if self.__credential is None:
+            self.__credential = StorageCredential.from_credential(
+                self.credential, **self.credential_options
+            )
+        return self.__credential
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Pickled as its constructor's arguments, but its loop, as `AbfsFileSystem` is: its accounts' are made again."""
+        return reduce_without_loop(self)
+
     def close(self) -> None:
         """Close the accounts' file systems, then the credential the router made.
 
@@ -304,9 +326,10 @@ class AbfsFileSystems(AsyncRoutingFileSystem[AbfsFileSystem]):
         try:
             super().close()
         finally:
-            if self._owns_credential:
-                close_on_loop(loop, [self.credential.value])
-                self._owns_credential = False
+            made, self.__credential = self.__credential, None
+            # One made of a string is the router's. An object given is the caller's.
+            if made is not None and made.value is not self.credential:
+                close_on_loop(loop, [made.value])
 
     # Copies between two accounts.
 

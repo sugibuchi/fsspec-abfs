@@ -1,6 +1,7 @@
 """Whether the account has a hierarchical namespace, and the profile that follows.
 
-The probe runs over HTTP: the dummy server refuses the account information, or the root ACL, as Azure does.
+The probe runs over HTTP: the dummy server refuses the account information as Azure does, e.g. to a SAS of one
+container.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import pytest
 
 from fsspec_abfs.abfs import HNS_PROFILE, NO_HNS_PROFILE, UNKNOWN_HNS_PROFILE
 
-_REFUSED = (403, "AuthorizationPermissionMismatch")
+_REFUSED = (403, "AuthorizationPermissionMismatch", "sig=SECRET")
 
 
 @pytest.mark.parametrize(
@@ -39,14 +40,9 @@ async def test_profile_asked_once(dummy, make_fs, hns) -> None:
     assert dummy.operations() == ["GetAccountInformation"]
 
 
-async def test_probe(make_fs, root, hns) -> None:
-    fs = make_fs(is_hns_enabled=None)
-    assert await fs._check_hns_enabled(root.split("/")[1]) is hns
-
-
 async def test_account_information(dummy, make_fs, hns) -> None:
     fs = make_fs(is_hns_enabled=None)
-    assert await fs._check_hns_enabled("c") is hns
+    assert await fs._check_hns_enabled() is hns
     assert dummy.operations() == ["GetAccountInformation"]
     # It asks each time, keeping nothing: loading the profile keeps it.
     assert fs.is_hns_enabled is None
@@ -56,57 +52,21 @@ async def test_account_information(dummy, make_fs, hns) -> None:
     assert dummy.operations() == ["GetAccountInformation"] * 2
 
 
-async def test_root_acl(dummy, make_fs, hns) -> None:
-    # Without HNS, the Data Lake API refuses: HierarchicalNamespaceNotEnabled.
-    dummy.failures["GetAccountInformation"] = _REFUSED
-    fs = make_fs(is_hns_enabled=None)
-    assert await fs._check_hns_enabled("c") is hns
-    assert dummy.operations() == ["GetAccountInformation", "GetAccessControl"]
-
-
-async def test_root_acl_of_first_container(dummy, make_fs, root, hns) -> None:
-    # The profile is loaded by a primitive, which names the container to probe.
-    dummy.failures["GetAccountInformation"] = _REFUSED
-    fs = make_fs(is_hns_enabled=None)
-    await fs._ls("/" + root.split("/")[1])
-    assert fs.is_hns_enabled is hns
-    assert dummy.count("GetAccessControl") == 1
-
-
-@pytest.mark.flat_only
-async def test_root_acl_unsupported_features(dummy, make_fs) -> None:
-    dummy.failures["GetAccountInformation"] = _REFUSED
-    dummy.failures["GetAccessControl"] = (409, "EndpointUnsupportedAccountFeatures")
-    fs = make_fs(is_hns_enabled=None)
-    assert await fs._check_hns_enabled("c") is False
-    await fs._get_storage_profile("/c")
-    assert fs.is_hns_enabled is False
-
-
 async def test_unknown_kept(dummy, make_fs, caplog) -> None:
+    # E.g. a SAS of one container: refused the account information.
     dummy.failures["GetAccountInformation"] = _REFUSED
-    dummy.failures["GetAccessControl"] = (403, "AuthorizationFailure", "sig=SECRET")
     fs = make_fs(is_hns_enabled=None)
     with caplog.at_level(logging.DEBUG, logger="fsspec_abfs.abfs"):
         assert await fs._get_storage_profile("/c/a") == UNKNOWN_HNS_PROFILE
         assert await fs._get_storage_profile("/c/a") == UNKNOWN_HNS_PROFILE
     assert fs.is_hns_enabled is None
     # Unknown is a profile right on both kinds of account: kept, never asked again.
-    assert dummy.count("GetAccountInformation") == 1
-    assert dummy.count("GetAccessControl") == 1
+    assert dummy.operations() == ["GetAccountInformation"]
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "AuthorizationFailure" in warnings[0].getMessage()
+    assert "AuthorizationPermissionMismatch" in warnings[0].getMessage()
     assert "SECRET" not in caplog.text  # Never Azure's message.
-
-
-async def test_no_container(dummy, make_fs) -> None:
-    # An operation at the root names no container to ask.
-    dummy.failures["GetAccountInformation"] = _REFUSED
-    fs = make_fs(is_hns_enabled=None)
-    assert await fs._check_hns_enabled("") is None
-    assert dummy.count("GetAccessControl") == 0
 
 
 @pytest.mark.parametrize(
@@ -120,28 +80,14 @@ async def test_no_container(dummy, make_fs) -> None:
         lambda fs: fs._mv("/c/a", "/c/b", recursive=True),
     ],
 )
-async def test_recursive_methods_probe_their_container(
-    dummy, make_fs, hns, call
-) -> None:
-    # The method names its container before its strategy loads the profile,
-    # with no path: the first operation of a filesystem, it probes that one.
+async def test_a_refused_account_works_unknown(dummy, make_fs, call) -> None:
     await make_fs()._pipe_file("/c/a/x", b"1")
     dummy.failures["GetAccountInformation"] = _REFUSED
     dummy.requests.clear()
     fs = make_fs(is_hns_enabled=None)
     await call(fs)
-    assert fs.is_hns_enabled is hns
-    assert dummy.count("GetAccessControl") == 1
-
-
-async def test_walk_probes_its_container(dummy, make_fs, hns) -> None:
-    await make_fs()._pipe_file("/c/a/x", b"1")
-    dummy.failures["GetAccountInformation"] = _REFUSED
-    dummy.requests.clear()
-    fs = make_fs(is_hns_enabled=None)
-    walked = [root async for root, _, _ in fs._walk("/c")]
-    assert walked == ["/c", "/c/a"]
-    assert fs.is_hns_enabled is hns
+    assert fs.is_hns_enabled is None
+    assert fs.storage_profile == UNKNOWN_HNS_PROFILE
 
 
 @pytest.mark.xfail(

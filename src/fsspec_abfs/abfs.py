@@ -40,6 +40,7 @@ from azure.storage.blob import BlobBlock, BlobSasPermissions, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.filedatalake.aio import DataLakeServiceClient
 from fsspec.asyn import sync, sync_wrapper
+from fsspec.spec import AbstractFileSystem, make_instance
 from fsspec_alt_strategies.profile import StorageProfile
 
 from ._contrib.strategy.files.adaptive import (
@@ -132,13 +133,6 @@ path of its own, and a move copies and deletes.
 
 _PROFILES = {True: HNS_PROFILE, False: NO_HNS_PROFILE, None: UNKNOWN_HNS_PROFILE}
 
-# The error codes of a Data Lake request on an account without a hierarchical
-# namespace: 400, or 409 where the account has features the dfs endpoint
-# refuses, e.g. soft delete.
-_NO_HNS_CODES = frozenset(
-    {"HierarchicalNamespaceNotEnabled", "EndpointUnsupportedAccountFeatures"}
-)
-
 _root_info = {"name": "/", "size": 0, "type": "directory"}
 
 _CLOCK_SKEW = timedelta(minutes=5)
@@ -211,6 +205,17 @@ def close_on_loop(
         loop.create_task(close_all())
     elif loop.is_running() and not sys.is_finalizing():
         sync(loop, close_all, timeout=5.0)
+
+
+def reduce_without_loop(fs: AbstractFileSystem) -> tuple[Any, ...]:
+    """What pickles a file system: fsspec's own, its constructor's arguments, but ``loop``.
+
+    Unpickling makes the file system again, by its constructor, through
+    fsspec's instance cache. A loop is never pickled, being bound to its
+    process: the file system unpickled takes its own, as fsspec gives one.
+    """
+    options = {k: v for k, v in fs.storage_options.items() if k != "loop"}
+    return make_instance, (type(fs), fs.storage_args, options)
 
 
 class _AccountCached(type(TreeFileSystem)):  # type: ignore[misc]
@@ -318,9 +323,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     credential : AsyncTokenCredential or str, default "default"
         An async token credential, or a string naming one, a SAS token or a
         shared key, as `StorageCredential.from_credential` reads it. The
-        default is ``DefaultAzureCredential``, and "anonymous" sends none. A
-        token credential given is the caller's to close. One made from a
-        string is the file system's, closed by `close`.
+        default is ``DefaultAzureCredential``, and "anonymous" sends none.
+        It is checked here, and kept as given in ``credential``. What the
+        clients take is made of it at first need. A token credential given is
+        the caller's to close. One made from a string is the file system's,
+        closed by `close`. A file system is pickled with its credential as
+        given: a string, or an object only if it pickles itself.
     account_domain : {"core.windows.net", "fabric.microsoft.com"}, optional
         The account's domain: Azure's, the default, or Fabric OneLake's.
     account_url : str, optional
@@ -340,7 +348,8 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
     **storage_options
         Passed to `fsspec.asyn.AsyncFileSystem`, e.g. ``asynchronous=True``. A
         token credential a string names takes its own from them, e.g.
-        ``tenant_id``: see `StorageCredential.from_credential`.
+        ``tenant_id``: see `StorageCredential.from_credential`. They are kept
+        as ``credential_options``.
 
     Raises
     ------
@@ -413,14 +422,14 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         # The endpoints the clients are made on, at first use.
         self._dfs_url = f"https://{self.account_name}.dfs.{self.account_domain}"
         self._blob_url = f"https://{self.account_name}.blob.{self.account_domain}"
-        self.credential = StorageCredential.from_credential(
-            credential, **storage_options
-        )
-        # A token credential made from a string is this file system's to close.
-        self._owns_credential = (
-            self.credential.kind == "TokenCredential"
-            and self.credential.value is not credential
-        )
+        # The credential as given, and the options a credential named takes
+        # its own from: both are the constructor's, as fsspec pickles them.
+        # Checked now, the credential is made at first need, by
+        # `_get_credential`, and never pickled.
+        StorageCredential.kind_of(credential)
+        self.credential: Any = credential
+        self.credential_options: dict[str, Any] = dict(storage_options)
+        self.__credential: StorageCredential | None = None
         # Declared, or set once `_check_hns_enabled` asks: the storage profile follows it. Until
         # loaded, it is the declared account's profile, or the unknown one's.
         self._is_hns_enabled: bool | None = is_hns_enabled
@@ -428,7 +437,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
 
         # The user delegation key that `_get_user_delegation_key` keeps, and
         # the lock asking for one at a time.
-        self._user_delegation_key: Any = None
+        self.__user_delegation_key: UserDelegationKey | None = None
         self._user_delegation_lock = asyncio.Lock()
 
         # Both clients, made together on the loop of their first use.
@@ -531,7 +540,40 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         else:
             return {"account_name": account[0], "account_domain": account[1]}
 
-    # The clients.
+    # Pickling.
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Pickled as its constructor's arguments, as fsspec pickles a file system, but its loop.
+
+        Nothing else is pickled: the clients, the credential made, and the
+        user delegation key are made again at first need. A loop is no
+        process's but its own: an unpickled sync file system takes fsspec's.
+        A token credential object given is pickled as an argument, which few
+        are: a string naming one is.
+        """
+        return reduce_without_loop(self)
+
+    # The credential and the clients.
+
+    def _get_credential(self) -> StorageCredential:
+        """The credential, as the clients take it: made at first need, of `credential` and `credential_options`."""
+        if self.__credential is None:
+            self.__credential = StorageCredential.from_credential(
+                self.credential, **self.credential_options
+            )
+        return self.__credential
+
+    def _owns_credential(self) -> bool:
+        """Whether a credential was made here, of a string, for this file system to close.
+
+        A token credential object given is the caller's.
+        """
+        made = self.__credential
+        return (
+            made is not None
+            and made.kind == "TokenCredential"
+            and made.value is not self.credential
+        )
 
     # The SDK's async clients hold an aiohttp session, bound to the loop of its
     # first request. A filesystem belongs to one loop, as fsspec caches its
@@ -545,11 +587,12 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         if self._client_loop is None:
             loop = asyncio.get_running_loop()
             # Both on the account's two endpoints, with the same credential.
+            credential = self._get_credential().value
             self._blob_service_client = BlobServiceClient(
-                self._blob_url, credential=self.credential.value
+                self._blob_url, credential=credential
             )
             self._dfs_service_client = DataLakeServiceClient(
-                self._dfs_url, credential=self.credential.value
+                self._dfs_url, credential=credential
             )
             self._client_loop = loop
 
@@ -576,9 +619,11 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             ]
             # A credential of its own is closed with the clients, on their loop,
             # where its requests ran. Unused, it holds nothing.
-            if clients and self._owns_credential:
-                clients.append(self.credential.value)
-                self._owns_credential = False
+            if clients and self._owns_credential():
+                clients.append(self.__credential.value)  # type: ignore[union-attr]
+            # Dropped: a closed file system makes none again.
+            self.__credential = None
+            self.__user_delegation_key = None
             loop = self._client_loop
             self._blob_service_client = self._dfs_service_client = None
             self._client_loop = None
@@ -600,70 +645,43 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         """
         return self._is_hns_enabled
 
-    async def _load_storage_profile(self, path: str) -> StorageProfile:
-        """The profile of the account, asked at the container of ``path``: see `_check_hns_enabled`.
+    async def _load_storage_profile(self, path: str = "") -> StorageProfile:
+        """The profile of the account: see `_check_hns_enabled`.
 
         The account is one namespace, so one profile fits the filesystem. The
-        base class loads it once, with the paths of the first operation needing
-        it, and keeps it as ``storage_profile``. A namespace declared to the
-        constructor is never asked. Else the account is asked, by
-        `_check_hns_enabled`, at the container of ``path``: a container's SAS or
-        role is allowed its root ACL. What it tells, or None, is kept as
-        `is_hns_enabled`.
+        base class loads it once, by the first operation needing it, and keeps
+        it as ``storage_profile``. A namespace declared to the constructor is
+        never asked. Else the account is asked, by `_check_hns_enabled`. What it
+        tells, or None, is kept as `is_hns_enabled`. ``path``, which the copy
+        of the strategies passes, is unused: the profile never depends on it.
         """
         if self._is_hns_enabled is None:
-            self._is_hns_enabled = await self._check_hns_enabled(
-                self.split_path(path)[0]
-            )
+            self._is_hns_enabled = await self._check_hns_enabled()
         return _PROFILES[self._is_hns_enabled]
 
-    async def _check_hns_enabled(self, container: str) -> bool | None:
+    async def _check_hns_enabled(self) -> bool | None:
         """Ask the account whether it has a hierarchical namespace: True, False, or None if unsure.
 
-        It asks every time: `_load_storage_profile` keeps what it tells.
-
-        1. The blob service's account information says so, but needs a role
-           on the account: a container's SAS or role is refused it.
-        2. Else the root ACL of ``container``, the container the first
-           operation acted in, from the Data Lake API: an account without a
-           hierarchical namespace refuses it by an error code of its own. An
-           operation at the root has no container to ask. Any other failure
-           tells nothing.
+        It asks every time: `_load_storage_profile` keeps what it tells. The
+        blob service's account information says so, but needs a role on the
+        account: a SAS or a role of one container is refused it. Then a warning
+        is logged, and ``is_hns_enabled`` given to the constructor says it.
 
         Only an error's type, status and code are logged: Azure's messages may
         quote request URLs, with a SAS token in them.
         """
-        blob_service, dfs_service = self._blob_service(), self._dfs_service()
-        last: BaseException | None = None
         try:
-            info = await blob_service.get_account_information()
+            info = await self._blob_service().get_account_information()
             return bool(info.get("is_hns_enabled"))
         except AzureError as e:
-            logger.debug("Account information refused: %s", describe(e))
-            last = e
-
-        if container:
-            directory = dfs_service.get_file_system_client(
-                container
-            ).get_directory_client("/")
-            try:
-                await directory.get_access_control()
-                return True
-            except HttpResponseError as e:
-                if getattr(e, "error_code", None) in _NO_HNS_CODES:
-                    return False
-                last = e
-            except AzureError as e:
-                last = e
-
-        logger.warning(
-            "Cannot tell whether the account %s has a hierarchical namespace"
-            " (%s): using the blob API, and moves by copy and delete. Pass"
-            " is_hns_enabled to say.",
-            self.account_name,
-            describe(last) if last else "no container to ask",
-        )
-        return None
+            logger.warning(
+                "Cannot tell whether the account %s has a hierarchical namespace"
+                " (%s): using the blob API, and moves by copy and delete. Pass"
+                " is_hns_enabled to say.",
+                self.account_name,
+                describe(e),
+            )
+            return None
 
     # Describing and listing.
 
@@ -996,14 +1014,15 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             If the identity may not ask for a key, e.g. with a role on a
             container only.
         """
-        if self.credential.kind != "TokenCredential":
+        kind = self._get_credential().kind
+        if kind != "TokenCredential":
             raise ValueError(
                 "A user delegation key needs a Microsoft Entra ID token credential,"
-                f" not {self.credential.kind}"
+                f" not {kind}"
             )
 
         async with self._user_delegation_lock:
-            key = self._user_delegation_key
+            key = self.__user_delegation_key
             margin = self._user_delegation_key_margin
             if key is None or _key_expiry(key) - datetime.now(UTC) < margin:
                 start = datetime.now(UTC) - _CLOCK_SKEW
@@ -1012,7 +1031,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
                         key_start_time=start,
                         key_expiry_time=start + self._user_delegation_key_lifetime,
                     )
-                self._user_delegation_key = key
+                self.__user_delegation_key = key
             return key
 
     async def _sign(self, path: str, expiration: int = 100, **kwargs: Any) -> str:
@@ -1066,14 +1085,15 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
         url = self._blob(container, key).url
         now = datetime.now(UTC)
         expiry = now + timedelta(seconds=expiration)
-        if self.credential.kind == "TokenCredential":
+        credential = self._get_credential()
+        if credential.kind == "TokenCredential":
             delegation = await self._get_user_delegation_key()
             signing = {
                 "user_delegation_key": delegation,
                 "expiry": min(expiry, _key_expiry(delegation)),
             }
-        elif self.credential.kind == "SharedKey":
-            signing = {"account_key": self.credential.value, "expiry": expiry}
+        elif credential.kind == "SharedKey":
+            signing = {"account_key": credential.value, "expiry": expiry}
         else:
             return url
 
@@ -1133,7 +1153,7 @@ class AbfsFileSystem(TreeFileSystem, metaclass=_AccountCached):
             # The SDK sends another container's rename with the client's
             # credential, but holds a SAS in the source's URL only: it takes the
             # destination's from the new name. Anonymous, it refuses the rename.
-            credential = self.credential
+            credential = self._get_credential()
             if credential.kind == "Anonymous":
                 raise PermissionError(
                     errno.EACCES, "No anonymous rename between containers", path1

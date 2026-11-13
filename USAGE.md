@@ -65,13 +65,11 @@ The other keyword arguments go to fsspec's `AsyncFileSystem`, e.g. `asynchronous
 ### The hierarchical namespace
 
 The file system works the same on accounts with or without a hierarchical namespace, but some operations take fewer
-requests with one. Unless `is_hns_enabled` says, the first operation needing to know asks the account:
+requests with one. Unless `is_hns_enabled` says, the first operation needing to know asks the account information.
+That needs a role on the account: a SAS token or a role of one container is refused it.
 
-1. The account information tells it, but needs a role on the account.
-2. Else the root of the container the operation works in tells it, e.g. for a SAS token of one container.
-
-If neither answers, a warning is logged, and the file system takes the way right on both kinds of account. Pass
-`is_hns_enabled` to save the request, or where the credential cannot ask.
+If the account does not answer, a warning is logged, and the file system takes the way right on both kinds of account.
+Pass `is_hns_enabled` to save the request, or where the credential cannot ask.
 
 ---
 
@@ -140,6 +138,39 @@ fs = AbfsFileSystem(account_name="myaccount", credential="sv=...&sig=...")
 
 A credential made from a keyword or a class name is closed with the file system. Sync credentials, of
 `azure.identity` rather than `azure.identity.aio`, are refused: the file system's clients are async.
+
+### Pickling, e.g. with Dask
+
+Dask and other frameworks that run tasks in other processes pickle the file system with each task. A file system is
+pickled as the arguments it was made with, `credential` and its options included. Unpickling calls the constructor
+again. Nothing the file system made is pickled: not its clients, not the credential object it made from a keyword, and
+not its event loop. Each worker makes its own when it first needs them, and fsspec's cache keeps one file system per
+set of arguments in each worker.
+
+So, on a cluster, **give the credential as a string**, a keyword or a class name, with its options:
+
+```python
+import dask.dataframe as dd
+
+df = dd.read_parquet(
+    "abfss://raw@myaccount.dfs.core.windows.net/data/table",
+    storage_options={"credential": "managed-identity", "client_id": "..."},
+)
+```
+
+- **Each worker authenticates on its own.** The identity must be available on every worker, not only on the client
+  that builds the graph:
+  - `"managed-identity"` or `"workload-identity"`: the identity of the VM, the container or the pod each worker runs in.
+  - `"environment"`: `AZURE_CLIENT_ID` and the other variables `EnvironmentCredential` reads, set on each worker.
+  - `"default"`: whichever of these the worker has.
+  - `"azure-cli"` needs `az login` on each worker, which a cluster rarely has.
+- **The options travel with every task.** A `client_secret`, a SAS token or a shared key given as an argument is in
+  the pickled task graph, and in anything that logs or stores it. `"managed-identity"`, `"workload-identity"` and
+  `"environment"` keep secrets out of the graph.
+- **Avoid passing a credential object.** It is pickled as it is, with whatever it holds: its secrets, and once used,
+  its tokens and its HTTP session, which may not pickle at all. Each worker gets a copy that it treats as the caller's,
+  so the worker never closes it.
+- `AbfsFileSystems` is pickled the same way: give its default credential, and those in `accounts`, as strings.
 
 ---
 
@@ -223,8 +254,7 @@ Delegator: a role on a container only is refused. See
 
 ### Containers
 
-The file system makes no container: create them with Azure's own tools, with their settings. `makedirs` of a missing
-container raises `PermissionError`, and of a folder in one `FileNotFoundError`. `rmdir` deletes an empty container.
+`rmdir` deletes an empty container. The file system makes none: see [Limitations](#containers-1).
 
 ### With or without a hierarchical namespace
 
@@ -236,8 +266,7 @@ container raises `PermissionError`, and of a folder in one `FileNotFoundError`. 
 | `rm` of a folder | One request for the folder with all in it         | One request per file                             |
 | `ls`, `find`     | The Data Lake API's listings                      | The blob API's listings                          |
 
-A rename is atomic, within a container or between two containers of the account. Between two, it needs a token
-credential or a SAS valid in both containers. Anonymous, it raises `PermissionError`.
+A rename is atomic, within a container or between two containers of the account.
 
 Copies run on the server, with no data through this process. A copy still pending is waited for.
 
@@ -264,8 +293,6 @@ df.to_parquet("/mycontainer/data/out.parquet", filesystem=fs)
 | `rb`  | Yes       |                                  |
 | `wb`  | Yes       |                                  |
 | `xb`  | Yes       | Fails if the file already exists |
-| `ab`  | No        |                                  |
-| `r+b` | No        |                                  |
 
 Reading:
 
@@ -295,14 +322,7 @@ with fs.transaction:
 ```
 
 A file's blocks are uploaded as it is written, and committed when the block ends. A file under 8 MiB is held in
-memory until then.
-
-Limits:
-
-- The files are committed one after another. A transaction is not atomic across files.
-- Only files written with `open` join the transaction, not those of `open_async`.
-- Copies, moves and deletes take effect at once.
-- If the process dies, uploaded blocks stay uncommitted until Azure drops them, after a week.
+memory until then. See [Limitations](#transactions-1) for what a transaction does not cover.
 
 ---
 
@@ -378,8 +398,7 @@ one, `transfer_concurrency` at a time, as `cross_account_copy` says:
 With `"server-side"`, the source's URL is its [signed URL](#signed-urls), as `sign` gives it. A SAS signed for the copy
 is valid for 12 hours, so that a long copy keeps reading its source.
 
-No copy falls back on streaming: a copy whose source the destination cannot read fails. With `"server-side"`, check two
-things before a copy:
+With `"server-side"`, check two things before a copy:
 
 1. With a Microsoft Entra ID token credential, the identity needs a role giving the action
    `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey` at the source account's level, as
@@ -395,15 +414,35 @@ A move between two accounts copies each file, then deletes it. A source whose co
 
 ### No directory cache
 
-fsspec lets a file system keep the listings it reads, in a directory cache, and leaves invalidating it to the caller.
-This file system caches no listing: every call reaches the storage, and `use_listings_cache` is always `False`.
+This file system caches no listing: every call reaches the storage, and `use_listings_cache` is always `False`. We have
+no plan to implement fsspec's `dircache` listing cache for now.
 
-Many clients now work on the same storage:
+### File modes
 
-- within one Python process, fsspec, PyArrow's own file systems, and the Rust `object_store` that Polars and delta-rs
-  use;
-- across processes, services such as Databricks, Amazon EMR and Microsoft Fabric, run by different users.
+- Files open in `rb`, `wb` and `xb` only. `ab` and `r+b` raise `io.UnsupportedOperation`.
+- `open_async` opens binary files only, without compression, as fsspec's does.
 
-Most of these clients keep no directory cache. A cache in fsspec assumes that fsspec alone changes the storage, and
-invalidating it by hand cannot keep it consistent with the others. So this file system takes the safe side: it will not
-implement directory caching.
+### Containers
+
+- The file system makes no container: create them with Azure's own tools, with their settings.
+- `makedirs` of a missing container raises `PermissionError`, and of a folder in one `FileNotFoundError`.
+- Deleting the root, `/`, raises `PermissionError`.
+
+### Moves
+
+- Without a hierarchical namespace, a move is not atomic: each file is copied on the server, then deleted.
+- A rename between two containers needs a token credential or a SAS valid in both. Anonymous, it raises
+  `PermissionError`.
+- Between two accounts, a move is not atomic either: each file is copied, then deleted.
+
+### Copies between accounts
+
+With `cross_account_copy="server-side"`, no copy falls back on streaming: a copy whose source the destination cannot
+read fails.
+
+### Transactions
+
+- The files are committed one after another. A transaction is not atomic across files.
+- Only files written with `open` join the transaction, not those of `open_async`.
+- Copies, moves and deletes take effect at once.
+- If the process dies, uploaded blocks stay uncommitted until Azure drops them, after a week.

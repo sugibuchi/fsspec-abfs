@@ -287,11 +287,16 @@ code only: Azure's own messages may quote request URLs, with a SAS token in them
 ### Picklable
 
 File systems are pickled to run in other processes, e.g. by Dask. fsspec pickles a file system as its constructor
-arguments, and unpickling calls the constructor again:
+arguments, and unpickling calls the constructor again. Nothing a file system made is pickled: the service clients and
+the token credentials hold aiohttp sessions, bound to an event loop of this process.
 
-- the clients are not pickled, and are made again on first use;
-- a credential given as a string is made again;
-- a credential object must be picklable itself.
+- `credential` and `credential_options` keep the credential and the options as given. The clients never use them.
+- The credential the clients take, a `StorageCredential`, is the private `__credential`. `_get_credential` makes it
+  at first need, of those two: an unpickled file system makes its own.
+- The clients are made again on first use, and the private `__user_delegation_key` asked for again.
+- `loop` is left out of the arguments pickled, e.g. an account's file system's of `AbfsFileSystems`: an unpickled sync
+  file system takes fsspec's.
+- A credential object given is pickled as it is: it must pickle itself. A string naming one always does.
 
 ### Known limits
 
@@ -341,10 +346,10 @@ credential object given is the caller's to close.
 `storage_profile` is `HNS_PROFILE`, `NO_HNS_PROFILE` or `UNKNOWN_HNS_PROFILE`:
 
 - `is_hns_enabled` given to the constructor sets it, and nothing is asked.
-- Otherwise the first operation needing it calls `_load_storage_profile` with its paths.
-- `_check_hns_enabled` asks the account information, then the root ACL of the operation's container, as a SAS or a
-  role of one container is refused the account information.
-- If neither tells, a warning is logged, and the profile stays unknown for the file system's life.
+- Otherwise the first operation needing it calls `_load_storage_profile`, whose path, passed by the copy of the
+  strategies, is unused: the profile is the account's.
+- `_check_hns_enabled` asks the account information. A SAS or a role of one container is refused it.
+- If it does not tell, a warning is logged, and the profile stays unknown for the file system's life.
 
 ### Primitives
 
